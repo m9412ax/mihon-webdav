@@ -63,6 +63,26 @@ jobs:
           done
           echo "ncnn SDK ready at $SDK"
 
+      # AGP 会自动下载缺失的 platform / build-tools，但**不会**下载 NDK，
+      # runner 镜像里也没有 28.2.13676358 这个版本，配置 :app 时直接
+      # "NDK not configured" 失败。超分的 libwaifu2x-jni.so 必须原生构建，NDK 省不掉。
+      - name: Install NDK and CMake
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKM=$(ls "$SDK"/cmdline-tools/latest/bin/sdkmanager \
+                    "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)
+          if [ -z "$SDKM" ]; then
+            echo "::error::找不到 sdkmanager（ANDROID_HOME=$SDK）"
+            ls -R "$SDK" 2>/dev/null | head -40
+            exit 1
+          fi
+          yes | "$SDKM" --licenses >/dev/null 2>&1 || true
+          # CMake 版本取自 app/build.gradle.kts 的 externalNativeBuild.cmake.version
+          "$SDKM" --install "ndk;28.2.13676358" "cmake;3.22.1"
+          test -d "$SDK/ndk/28.2.13676358" || { echo "::error::NDK 安装后目录不存在"; exit 1; }
+          echo "NDK + CMake ready under $SDK"
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
