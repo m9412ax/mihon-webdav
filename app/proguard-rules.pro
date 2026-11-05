@@ -35,6 +35,12 @@
 -dontwarn androidx.window.extensions.**
 -dontwarn androidx.window.sidecar.**
 
+# SY --> smbj（SMB 阅读源）：Kerberos/SPNEGO 认证器经 Class.forName 反射加载，且 SmbConfig
+# 在检测到 android.os.Build 时会跳过它，因此 Android 上不存在的 GSS-API / JAAS 永不触达。
+-dontwarn org.ietf.jgss.**
+-dontwarn javax.security.auth.**
+# SY <--
+
 ##---------------Begin: proguard configuration for RxJava 1.x  ----------
 -dontwarn sun.misc.**
 

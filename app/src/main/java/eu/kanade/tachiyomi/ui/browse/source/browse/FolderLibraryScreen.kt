@@ -78,6 +78,7 @@ import tachiyomi.source.local.LocalSource
 import eu.kanade.tachiyomi.source.netdisk.aliyun.AliyunPanSource
 import eu.kanade.tachiyomi.source.netdisk.cloud115open.Cloud115OpenSource
 import eu.kanade.tachiyomi.source.netdisk.quark.QuarkSource
+import eu.kanade.tachiyomi.source.smb.SmbSource
 import eu.kanade.tachiyomi.source.webdav.LocalWebDavSource
 import eu.kanade.tachiyomi.source.webdav.WebDavSource
 import mihon.app.di.appGraph
@@ -203,6 +204,7 @@ data class FolderLibraryScreen(
         // 先选网盘（仅显示已登录的），再进可视化目录选择器逐层点选，不用填 cid/fid。
         var showNetdiskChooser by remember { mutableStateOf(false) }
         val netdiskPreferences = remember { context.appGraph.netdiskPreferences }
+        val smbPreferences = remember { context.appGraph.smbPreferences }
         // SY 2026-10-06：网盘文件夹挂载后立即刷新「云盘」文件夹列表
         LaunchedEffect(Unit) {
             netdiskPreferences.netdiskMounts.changes().collect {
@@ -475,22 +477,25 @@ data class FolderLibraryScreen(
             )
         }
         // SY 2026-10-05：选择要挂载的网盘（仅显示已登录的），确认后进可视化目录选择器
+        // SY 2026-11-05：SMB/NAS 加入同一个选择器；它没有登录流程，未就绪提示用「未配置」
         if (showNetdiskChooser) {
             val nav = LocalNavigator.currentOrThrow
             val netdiskOptions = listOf(
-                Triple("115 网盘（开放平台）", Cloud115OpenSource.ID, netdiskPreferences.isCloud115OpenConfigured()),
-                Triple("夸克网盘", QuarkSource.ID, netdiskPreferences.isQuarkConfigured()),
-                Triple("阿里云盘", AliyunPanSource.ID, true), // 与备份同步共用登录，登录状态进选择器再验证
+                MountOption("115 网盘（开放平台）", Cloud115OpenSource.ID, netdiskPreferences.isCloud115OpenConfigured(), "未登录"),
+                MountOption("夸克网盘", QuarkSource.ID, netdiskPreferences.isQuarkConfigured(), "未登录"),
+                // 与备份同步共用登录，登录状态进选择器再验证
+                MountOption("阿里云盘", AliyunPanSource.ID, true, "未登录"),
+                MountOption("SMB / NAS", SmbSource.ID, smbPreferences.isConfigured(), "未配置"),
             )
             AlertDialog(
                 onDismissRequest = { showNetdiskChooser = false },
-                title = { Text(text = "添加网盘文件夹") },
+                title = { Text(text = "添加网盘 / SMB 文件夹") },
                 text = {
                     Column {
-                        netdiskOptions.forEach { (name, id, ready) ->
+                        netdiskOptions.forEach { option ->
                             Text(
-                                text = if (ready) name else "$name（未登录）",
-                                color = if (ready) {
+                                text = if (option.ready) option.label else "${option.label}（${option.notReadyHint}）",
+                                color = if (option.ready) {
                                     MaterialTheme.colorScheme.primary
                                 } else {
                                     MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
@@ -498,9 +503,9 @@ data class FolderLibraryScreen(
                                 style = MaterialTheme.typography.titleMedium,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable(enabled = ready) {
+                                    .clickable(enabled = option.ready) {
                                         showNetdiskChooser = false
-                                        nav.push(NetdiskFolderPickerScreen(id))
+                                        nav.push(NetdiskFolderPickerScreen(option.sourceId))
                                     }
                                     .padding(vertical = 12.dp),
                             )
@@ -522,6 +527,14 @@ data class FolderLibraryScreen(
         // SY <--
     }
 }
+
+/** SY 2026-11-05：「添加网盘 / SMB 文件夹」选择器的一个后端选项。 */
+private data class MountOption(
+    val label: String,
+    val sourceId: Long,
+    val ready: Boolean,
+    val notReadyHint: String,
+)
 
 /**
  * SY --> 把 [SourceFolder] 包装成书架项 [LibraryItem]，封面走 content:// 通道（书架网格能直接加载）。

@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - master
+      # 仓库默认分支是 main，原来的工作流只监听 master，push 到 main 根本不会触发
+      - main
   pull_request:
 
 concurrency:
@@ -27,8 +29,51 @@ jobs:
           java-version-file: .github/.java-version
           distribution: temurin
 
+      # 仓库不含 third_party/（见 README「构建超分需要 ncnn SDK」），干净检出直接构建会在
+      # CMake 配置阶段 FATAL_ERROR。这里按 app/src/main/cpp/CMakeLists.txt 期望的版本取官方
+      # 预编译包，放到它兜底查找的那个路径上，构建就不需要任何本地配置。
+      - name: Fetch ncnn Android Vulkan SDK
+        env:
+          NCNN_VERSION: '20260113'
+        run: |
+          set -euo pipefail
+          SDK="third_party/ncnn-${NCNN_VERSION}-android-vulkan"
+          if [ -d "$SDK" ]; then
+            echo "ncnn SDK already present, skipping download"
+            exit 0
+          fi
+          mkdir -p third_party/.tmp
+          curl -fsSL --retry 3 -o third_party/.tmp/ncnn.zip \
+            "https://github.com/Tencent/ncnn/releases/download/${NCNN_VERSION}/ncnn-${NCNN_VERSION}-android-vulkan.zip"
+          unzip -q third_party/.tmp/ncnn.zip -d third_party/.tmp/unpacked
+          # 官方 zip 可能带一层同名外壳目录，统一压平成 CMake 期望的 <SDK>/<ABI>/lib/cmake/ncnn 布局
+          if [ -d "third_party/.tmp/unpacked/ncnn-${NCNN_VERSION}-android-vulkan" ]; then
+            mv "third_party/.tmp/unpacked/ncnn-${NCNN_VERSION}-android-vulkan" "$SDK"
+          else
+            mv third_party/.tmp/unpacked "$SDK"
+          fi
+          rm -rf third_party/.tmp
+          # 布局不对就带着目录清单失败，别把问题拖到 CMake 里变成一句看不懂的报错
+          for ABI in arm64-v8a armeabi-v7a; do
+            if ! ls "$SDK/$ABI"/lib/cmake/ncnn/ncnn*C*nfig.cmake >/dev/null 2>&1; then
+              echo "::error::ncnn SDK 缺少 $ABI 的 CMake 包，实际布局如下"
+              find "$SDK" -maxdepth 4 | head -60
+              exit 1
+            fi
+          done
+          echo "ncnn SDK ready at $SDK"
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
       - name: Build release APK
-        run: ./gradlew assembleRelease
+        run: ./gradlew assembleRelease --stacktrace
+
+      # 产物不上传的话，CI 跑完了也拿不到 APK（原工作流只有 build、没有产出步骤）
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: mihonW-release-arm64v8a-armeabiv7a
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 14

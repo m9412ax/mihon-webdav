@@ -28,6 +28,7 @@ import cafe.adriel.voyager.navigator.LocalNavigator
 import cafe.adriel.voyager.navigator.currentOrThrow
 import eu.kanade.presentation.components.AppBar
 import eu.kanade.tachiyomi.source.netdisk.BaseNetdiskSource
+import eu.kanade.tachiyomi.source.webdav.MountedFolderBackend
 import eu.kanade.tachiyomi.source.webdav.WebDavSource
 import eu.kanade.tachiyomi.util.system.toast
 import kotlinx.coroutines.launch
@@ -53,12 +54,12 @@ class NetdiskFolderPickerScreen(val sourceId: Long) : eu.kanade.presentation.uti
         val navigator = LocalNavigator.currentOrThrow
         val sourceManager = remember { context.appGraph.sourceManager }
 
-        var source by remember { mutableStateOf<BaseNetdiskSource?>(null) }
+        var source by remember { mutableStateOf<MountedFolderBackend?>(null) }
         var webdav by remember { mutableStateOf<WebDavSource?>(null) }
         var loadError by remember { mutableStateOf<String?>(null) }
         LaunchedEffect(sourceId) {
             runCatching { sourceManager.getOrStub(sourceId) }
-                .onSuccess { source = it as? BaseNetdiskSource }
+                .onSuccess { source = it as? MountedFolderBackend }
                 .onFailure { loadError = it.message }
             // 挂载目标 = 「云盘」源（网盘目录并入云盘文件夹视图，共用其封面/加载/流式规则）
             runCatching { sourceManager.getOrStub(WebDavSource.ID) }
@@ -150,8 +151,10 @@ class NetdiskFolderPickerScreen(val sourceId: Long) : eu.kanade.presentation.uti
                             FolderRow(
                                 title = name,
                                 onClick = {
-                                    // 进入下一层：登记目录名（显示名缓存，文件夹视图直接可读）
-                                    src.rememberDirName(id, name)
+                                    // 进入下一层：登记目录名（显示名缓存，文件夹视图直接可读）。
+                                    // 只有网盘后端需要 —— 它的目录标识是裸 id，不登记就没有可读名字；
+                                    // SMB 的标识本身就是路径，末段即名字，无需缓存。
+                                    (src as? BaseNetdiskSource)?.rememberDirName(id, name)
                                     pathStack = pathStack + (id to name)
                                 },
                             )

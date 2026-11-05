@@ -17,6 +17,7 @@ import eu.kanade.tachiyomi.ui.setting.track.QuarkQrLoginActivity
 import eu.kanade.tachiyomi.util.system.toast
 import kotlinx.coroutines.launch
 import mihon.app.di.appGraph
+import tachiyomi.core.common.preference.Preference as PreferenceData
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.i18n.stringResource
 
@@ -44,6 +45,7 @@ object SettingsNetdiskScreen : SearchableSettings {
 
         return listOf(
             getNetdiskSourceGroup(),
+            getSmbGroup(),
             Preference.PreferenceGroup(
                 title = "WebDAV（网盘同步）",
                 preferenceItems = listOf(
@@ -66,8 +68,9 @@ object SettingsNetdiskScreen : SearchableSettings {
                 ),
             ),
             Preference.PreferenceItem.InfoPreference(
-                "阅读图源（115 网盘 / 夸克网盘 / 阿里云盘）在「浏览 → 图源」里出现；" +
-                    "进图源后点「添加文件夹」可挂载更多目录（阿里云盘支持直接填目录名）。",
+                "网盘源（115 / 夸克 / 阿里云盘）与 SMB / NAS 都不在「浏览 → 图源」里单独出现，" +
+                    "统一从「书架 → 云盘 → 添加网盘 / SMB 文件夹」挂载目录后阅读，" +
+                    "封面 / 流式 / 章节识别与 WebDAV 云盘完全一致。",
             ),
         )
     }
@@ -212,6 +215,78 @@ object SettingsNetdiskScreen : SearchableSettings {
                 Preference.PreferenceItem.InfoPreference(
                     "阿里云盘阅读源与「备份同步」共用登录：下方同步服务里登录后，" +
                     "图源「阿里云盘」立即可浏览（挂载点在图源内「添加文件夹」填目录名或 fileId）。",
+                ),
+            ),
+        )
+    }
+
+    /**
+     * SY 2026-11-05：SMB / NAS 阅读源配置。与网盘源同级，但没有扫码登录那一套 ——
+     * 连接参数就是「主机 + 共享 + 账号」，填完用「测试连接」验证。
+     *
+     * 每改一项都要 [eu.kanade.tachiyomi.source.smb.SmbClient.reset]：否则客户端仍持有指向
+     * 旧服务器 / 旧账号的会话，界面看着改好了、读到的还是旧共享。
+     */
+    @Composable
+    private fun getSmbGroup(): Preference.PreferenceGroup {
+        val context = LocalContext.current
+        val scope = rememberCoroutineScope()
+        val smbPreferences = remember { context.appGraph.smbPreferences }
+        val smbClient = remember { context.appGraph.smbClient }
+
+        // subtitle 必须显式给：EditTextPreference 的默认值是 "%s"，会把当前值原样显示在列表里，
+        // 密码字段因此绝不能走默认值
+        fun smbField(title: String, subtitle: String, preference: PreferenceData<String>) =
+            Preference.PreferenceItem.EditTextPreference(
+                title = title,
+                subtitle = subtitle,
+                preference = preference,
+                onValueChanged = { newValue ->
+                    preference.set(newValue.trim())
+                    smbClient.reset()
+                    true
+                },
+            )
+
+        fun configuredHint(preference: PreferenceData<String>, what: String) =
+            if (preference.get().isNotBlank()) "已填$what" else "未填$what"
+
+        return Preference.PreferenceGroup(
+            title = "SMB / NAS（阅读）",
+            preferenceItems = listOf(
+                Preference.PreferenceItem.InfoPreference(
+                    "只读访问 SMB 共享（群晖 / 威联通 / Windows 共享 / Samba 等），把 NAS 上的漫画" +
+                    "当成一个图源读。仅支持 SMB2 / SMB3 —— 服务器若只开了 SMB1，需先在 NAS 侧启用 SMB2。" +
+                    "配置好后到「书架 → 云盘 → 添加网盘 / SMB 文件夹」挂载要看的目录。",
+                ),
+                smbField("SMB：主机", "NAS 的 IP 或主机名，例如 192.168.1.10", smbPreferences.host),
+                smbField("SMB：端口", "默认 445；留空或填错都按 445 处理", smbPreferences.port),
+                smbField("SMB：共享名", "共享文件夹名本身，不含主机与子路径，例如 comics", smbPreferences.share),
+                smbField("SMB：域 / 工作组", "家用 NAS 与 Windows 工作组留空即可，加域的机器才需要填", smbPreferences.domain),
+                smbField("SMB：用户名", configuredHint(smbPreferences.username, "用户名"), smbPreferences.username),
+                smbField("SMB：密码", configuredHint(smbPreferences.password, "密码（不显示）"), smbPreferences.password),
+                Preference.PreferenceItem.TextPreference(
+                    title = "SMB：测试连接",
+                    subtitle = if (smbPreferences.isConfigured()) {
+                        "已配置（主机 / 共享名 / 用户名齐全）"
+                    } else {
+                        "未配置：主机、共享名、用户名三项必填"
+                    },
+                    onClick = {
+                        scope.launch {
+                            if (!smbPreferences.isConfigured()) {
+                                context.toast("SMB 未配置：主机、共享名、用户名三项必填")
+                                return@launch
+                            }
+                            smbClient.testConnection()
+                                .onSuccess { context.toast("SMB 连接成功：$it") }
+                                .onFailure { e ->
+                                    // 直接把真实原因给用户：认证失败 / 主机不可达 / 共享名不存在
+                                    // 三者的处理方式完全不同，笼统一句「连接失败」没法排查
+                                    context.toast("SMB 连接失败：${e.message ?: e.javaClass.simpleName}")
+                                }
+                        }
+                    },
                 ),
             ),
         )

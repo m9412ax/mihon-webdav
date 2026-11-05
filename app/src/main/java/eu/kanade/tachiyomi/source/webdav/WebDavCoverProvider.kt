@@ -48,6 +48,9 @@ object WebDavCoverBridge {
     /** SY 2026-10-08：115 开放平台（OAuth）源——id 体系与 Cookie 模式不同，authority/缓存独立。 */
     const val CLOUD115OPEN_AUTHORITY = "app.mihonW.cloud115open.cover"
 
+    /** SY 2026-11-05：SMB/NAS 源——路径空间与 WebDAV 各自独立，authority/缓存独立。 */
+    const val SMB_AUTHORITY = "app.mihonW.smb.cover"
+
     lateinit var cloudSyncService: CloudSyncService
     lateinit var downloadPreferences: DownloadPreferences
     /** 封面回退（无 cover 时取第一话首页）需要源侧的下载/解析能力，由 WebDavSource.init 注入。 */
@@ -62,6 +65,10 @@ object WebDavCoverBridge {
 
     /** SY 2026-10-08：115 开放平台源实例，由其 init 注入。 */
     var cloud115OpenSource: eu.kanade.tachiyomi.source.netdisk.cloud115open.Cloud115OpenSource? = null
+        private set
+
+    /** SY 2026-11-05：SMB/NAS 源实例，由其 init 注入。 */
+    var smbSource: eu.kanade.tachiyomi.source.smb.SmbSource? = null
         private set
 
     fun bindWebDavSource(source: WebDavSource) {
@@ -79,6 +86,11 @@ object WebDavCoverBridge {
     /** SY 2026-10-08：绑定 115 开放平台源。 */
     fun bindCloud115OpenSource(source: eu.kanade.tachiyomi.source.netdisk.cloud115open.Cloud115OpenSource) {
         cloud115OpenSource = source
+    }
+
+    /** SY 2026-11-05：绑定 SMB/NAS 源。 */
+    fun bindSmbSource(source: eu.kanade.tachiyomi.source.smb.SmbSource) {
+        smbSource = source
     }
 
     fun resolveConfig(): Pair<CloudSyncConfig, String>? {
@@ -106,6 +118,7 @@ object WebDavCoverBridge {
         CLOUD115OPEN_AUTHORITY -> cloud115OpenSource?.let {
             CoverTarget(it, WebDavCoverStore.Backend.CLOUD115OPEN, "cloud115open-covers")
         }
+        SMB_AUTHORITY -> smbSource?.let { CoverTarget(it, WebDavCoverStore.Backend.SMB, "smb-covers") }
         else -> null
     }
 }

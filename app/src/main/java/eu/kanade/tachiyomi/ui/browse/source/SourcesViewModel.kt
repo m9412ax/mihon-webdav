@@ -15,6 +15,7 @@ import eu.kanade.presentation.browse.SourceUiModel
 import eu.kanade.tachiyomi.source.netdisk.aliyun.AliyunPanSource
 import eu.kanade.tachiyomi.source.netdisk.cloud115open.Cloud115OpenSource
 import eu.kanade.tachiyomi.source.netdisk.quark.QuarkSource
+import eu.kanade.tachiyomi.source.smb.SmbSource
 import eu.kanade.tachiyomi.source.webdav.WebDavSource
 import tachiyomi.source.local.isLocal
 import kotlinx.coroutines.Dispatchers
@@ -56,11 +57,13 @@ class SourcesViewModel(
         // 避免在浏览源列表里重复占位）。GetEnabledSources 仍照常返回它们，只在此处过滤。
         // SY 2026-10-06（用户要求）：网盘源不进「浏览 → 图源」——网盘目录通过
         // 「云盘」文件夹层的「添加网盘文件夹」挂载，共用云盘的浏览/封面/流式规则。
+        // SY 2026-11-05：SMB/NAS 源同待遇（同样只经「云盘」挂载进入）。
         .map { sources ->
             sources.filterNot {
                 it.isLocal() || it.id == WebDavSource.ID ||
                     it.id == QuarkSource.ID ||
-                    it.id == AliyunPanSource.ID || it.id == Cloud115OpenSource.ID
+                    it.id == AliyunPanSource.ID || it.id == Cloud115OpenSource.ID ||
+                    it.id == SmbSource.ID
             }
         }
         // SY <--

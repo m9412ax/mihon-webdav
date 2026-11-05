@@ -161,7 +161,10 @@ android {
             isEnable = true
             isUniversalApk = true
             reset()
-            include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+            // 只出 arm64-v8a 与 armeabi-v7a：真机全是这两个 ABI，x86/x86_64 只对模拟器有意义，
+            // 而每个 ABI 都要跑一遍 ncnn/Vulkan 的原生构建，砍掉一半能显著缩短构建时间。
+            // universal APK 仍保留（此时它只含这两个 ABI），单文件安装最省事。
+            include("armeabi-v7a", "arm64-v8a")
         }
     }
 
@@ -311,6 +314,12 @@ dependencies {
     implementation(libs.bundles.okhttp)
     implementation(libs.okio)
     implementation(libs.conscrypt) // TLS 1.3 support for Android < 10
+
+    // SY --> SMB/NAS 阅读源：smbj（SMB2/3，Apache-2.0）。
+    // NTLM 的 MD4 只能由 BouncyCastle 提供（Android JCE 没有），故随 smbj 引入 bcprov；
+    // libs.versions.toml 里的 bouncycastle 版本已对齐 smbj 的编译版本，避免两处解析出不同 BC。
+    implementation(libs.smbj)
+    // SY <--
 
     // Data serialization (JSON, protobuf, xml)
     implementation(libs.bundles.serialization)

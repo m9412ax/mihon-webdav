@@ -57,6 +57,9 @@ object WebDavCoverStore {
     /** SY 2026-10-08：115 开放平台（OAuth）源，id 体系与 Cookie 模式不同，封面缓存独立。 */
     private const val DIR_CLOUD115OPEN = "cloud115open-covers"
 
+    /** SY 2026-11-05：SMB/NAS 源，路径空间与 WebDAV 各自独立，封面缓存独立。 */
+    private const val DIR_SMB = "smb-covers"
+
     /** 与两个 Provider 的候选扩展名同序（先命中的优先）。 */
     private val COVER_EXTENSIONS = listOf("jpg", "webp", "png", "jpeg")
 
@@ -255,7 +258,7 @@ object WebDavCoverStore {
      * SY 2026-10-05：新增 CLOUD115 / QUARK（网盘源），源分发统一按 `(source as? BaseWebDavSource)`，
      * 不再逐后端 hard-cast。
      */
-    enum class Backend { WEBDAV, LOCAL, QUARK, ALIYUNPAN, CLOUD115OPEN }
+    enum class Backend { WEBDAV, LOCAL, QUARK, ALIYUNPAN, CLOUD115OPEN, SMB }
 
     private fun coverDir(context: Context, backend: Backend): File = File(
         context.filesDir,
@@ -265,6 +268,7 @@ object WebDavCoverStore {
             Backend.QUARK -> DIR_QUARK
             Backend.ALIYUNPAN -> DIR_ALIYUNPAN
             Backend.CLOUD115OPEN -> DIR_CLOUD115OPEN
+            Backend.SMB -> DIR_SMB
         },
     ).apply { mkdirs() }
 
@@ -382,6 +386,7 @@ object WebDavCoverStore {
             Backend.QUARK -> WebDavCoverBridge.QUARK_AUTHORITY
             Backend.ALIYUNPAN -> WebDavCoverBridge.ALIYUN_AUTHORITY
             Backend.CLOUD115OPEN -> WebDavCoverBridge.CLOUD115OPEN_AUTHORITY
+            Backend.SMB -> WebDavCoverBridge.SMB_AUTHORITY
         }
         return "content://$authority/${Uri.encode(mangaUrl)}"
     }

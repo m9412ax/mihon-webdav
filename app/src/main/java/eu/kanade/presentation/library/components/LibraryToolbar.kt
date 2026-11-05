@@ -184,9 +184,10 @@ private fun LibraryRegularToolbar(
                         )
                     },
                     // SY 2026-10-05：添加网盘文件夹 —— 紧挨「添加文件夹」下面，打开可视化目录选择器
+                    // SY 2026-11-05：SMB/NAS 也走这个入口挂载，标题一并改准
                     onAddNetdiskFolder?.let {
                         AppBar.OverflowAction(
-                            title = "添加网盘文件夹",
+                            title = "添加网盘 / SMB 文件夹",
                             onClick = it,
                         )
                     },
