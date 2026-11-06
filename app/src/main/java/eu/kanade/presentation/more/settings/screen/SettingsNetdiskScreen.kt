@@ -262,6 +262,43 @@ object SettingsNetdiskScreen : SearchableSettings {
                 smbField("SMB：主机", "NAS 的 IP 或主机名，例如 192.168.1.10", smbPreferences.host),
                 smbField("SMB：端口", "默认 445；留空或填错都按 445 处理", smbPreferences.port),
                 smbField("SMB：共享名", "共享文件夹名本身，不含主机与子路径，例如 comics", smbPreferences.share),
+                Preference.PreferenceItem.TextPreference(
+                    title = "SMB：列出共享…",
+                    subtitle = "不知道共享叫什么就点这个：连上服务器读出所有共享，选中即自动填入上面的共享名",
+                    onClick = {
+                        scope.launch {
+                            smbClient.enumerateShares()
+                                .onSuccess { shares ->
+                                    val diskShares = shares.filter { it.isDiskTree && !it.isAdminShare }
+                                    if (diskShares.isEmpty()) {
+                                        showSmbMessage(
+                                            context,
+                                            "SMB 共享枚举",
+                                            "这台服务器没有可浏览的文件共享（共 ${shares.size} 项，" +
+                                                "都是 IPC/打印机或结尾带 \$ 的管理共享）。" +
+                                                "请在 NAS 上确认共享名后手动填到上一项。",
+                                        )
+                                        return@onSuccess
+                                    }
+                                    val labels = diskShares.map { share ->
+                                        if (share.remark.isBlank()) share.name else "${share.name}　（${share.remark}）"
+                                    }
+                                    android.app.AlertDialog.Builder(context)
+                                        .setTitle("选择共享")
+                                        .setItems(labels.toTypedArray()) { _, which ->
+                                            // 只写偏好、不建连接：共享名变了，下次访问会按新端点重建会话
+                                            smbPreferences.share.set(diskShares[which].name)
+                                            context.toast("已填入共享名「${diskShares[which].name}」")
+                                        }
+                                        .setNegativeButton("取消", null)
+                                        .show()
+                                }
+                                .onFailure { e ->
+                                    showSmbMessage(context, "SMB 共享枚举失败", e.message ?: e.javaClass.simpleName)
+                                }
+                        }
+                    },
+                ),
                 smbField("SMB：域 / 工作组", "家用 NAS 与 Windows 工作组留空即可，加域的机器才需要填", smbPreferences.domain),
                 smbField("SMB：用户名", "NAS 上用于访问该共享的账号", smbPreferences.username),
                 smbField("SMB：密码", "不会显示在列表里；也不会被写进备份或同步到云端", smbPreferences.password),
@@ -284,14 +321,7 @@ object SettingsNetdiskScreen : SearchableSettings {
                                 .onFailure { e ->
                                     val msg = e.message ?: e.javaClass.simpleName
                                     smbPreferences.lastTestResult.set("连接失败：$msg")
-                                    // 用对话框而不是 toast：真机上 toast 被限制在两行，
-                                    // 正好把 smbj 的根因截掉（`ExecutionException: com.hie…`），
-                                    // 而排查需要的恰恰是那半句。对话框可换行、可滚动。
-                                    android.app.AlertDialog.Builder(context)
-                                        .setTitle("SMB 连接失败")
-                                        .setMessage(msg)
-                                        .setPositiveButton("好", null)
-                                        .show()
+                                    showSmbMessage(context, "SMB 连接失败", msg)
                                 }
                         }
                     },
@@ -304,4 +334,16 @@ object SettingsNetdiskScreen : SearchableSettings {
             ),
         )
     }
+}
+
+/**
+ * SMB 相关的长文本提示统一走对话框：toast 在真机上被限制成两行，
+ * 恰好会把 smbj 的根因与 SRVSVC 的 NT 状态码截掉，而那正是排查所需。
+ */
+private fun showSmbMessage(context: android.content.Context, title: String, message: String) {
+    android.app.AlertDialog.Builder(context)
+        .setTitle(title)
+        .setMessage(message)
+        .setPositiveButton("好", null)
+        .show()
 }

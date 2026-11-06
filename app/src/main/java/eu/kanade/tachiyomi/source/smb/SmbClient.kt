@@ -51,12 +51,18 @@ class SmbClient(
     private val lock = Any()
     private var handle: SmbHandle? = null
 
-    /** 未配置时返回 null，调用方据此优雅降级（与 WebDAV 的 `configOrNull()` 同语义）。 */
-    private fun endpointOrNull(): SmbEndpoint? {
+    /**
+     * 未配置时返回 null，调用方据此优雅降级（与 WebDAV 的 `configOrNull()` 同语义）。
+     *
+     * @param requireShare 枚举共享时传 false —— 用户此时恰恰因为不知道共享名才要枚举，
+     *                     把共享名当必填会让这个功能永远打不开。正常读取路径仍传 true。
+     */
+    private fun endpointOrNull(requireShare: Boolean): SmbEndpoint? {
         val host = preferences.host.get().trim()
         val share = preferences.share.get().trim()
         val username = preferences.username.get()
-        if (host.isBlank() || share.isBlank() || username.isBlank()) return null
+        if (host.isBlank() || username.isBlank()) return null
+        if (requireShare && share.isBlank()) return null
         // 端口存的是字符串（与其它字段共用输入控件）：留空或非法一律回退到 445，不让用户填错就连不上
         val port = preferences.port.get().trim().toIntOrNull()
             ?.takeIf { it in 1..65535 }
@@ -71,6 +77,21 @@ class SmbClient(
         )
     }
 
+    /** 每次建连都重新构造：smbj 的 SmbConfig 是不可变的，且配置项可能已被用户改过。 */
+    private fun buildConfig(): SmbConfig =
+        SmbConfig.builder()
+            // 单次请求的响应超时；NAS 休眠唤醒后第一次请求可能很慢，给足余量
+            .withTimeout(RESPONSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .withSoTimeout(SO_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            // 让客户端与服务端协商出双方都支持的最高方言（SMB 2.0.2 ~ 3.1.1）
+            .withMultiProtocolNegotiate(true)
+            // DFS referral 会把路径重定向到别的服务器，漫画共享用不到，关掉少一层失败面
+            .withDfsEnabled(false)
+            // 期望的单次读长度；smbj 内部会 min(此值, 服务端 MaxReadSize) 钳位，
+            // 所以填大了也安全，读不满由调用方循环补齐（见 SmbRandomAccessSource）
+            .withReadBufferSize(READ_BUFFER_BYTES)
+            .build()
+
     /**
      * 取得可用的 [DiskShare]：端点没变且连接还活着就直接复用，否则丢弃旧句柄重连。
      * 锁只保护「建连/换连」，不覆盖具体操作 —— 一个 SMB2 会话本身是多路复用的，
@@ -78,7 +99,7 @@ class SmbClient(
      */
     private fun acquireShare(): DiskShare {
         synchronized(lock) {
-            val endpoint = endpointOrNull() ?: throw IllegalStateException("SMB 未配置")
+            val endpoint = endpointOrNull(requireShare = true) ?: throw IllegalStateException("SMB 未配置")
             handle?.let { existing ->
                 if (existing.endpoint == endpoint && existing.connection.isConnected) {
                     return existing.share
@@ -86,20 +107,7 @@ class SmbClient(
             }
             closeLocked()
 
-            val config = SmbConfig.builder()
-                // 单次请求的响应超时；NAS 休眠唤醒后第一次请求可能很慢，给足余量
-                .withTimeout(RESPONSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-                .withSoTimeout(SO_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-                // 让客户端与服务端协商出双方都支持的最高方言（SMB 2.0.2 ~ 3.1.1）
-                .withMultiProtocolNegotiate(true)
-                // DFS  referral 会把路径重定向到别的服务器，漫画共享用不到，关掉少一层失败面
-                .withDfsEnabled(false)
-                // 期望的单次读长度；smbj 内部会 min(此值, 服务端 MaxReadSize) 钳位，
-                // 所以填大了也安全，读不满由调用方循环补齐（见 SmbRandomAccessSource）
-                .withReadBufferSize(READ_BUFFER_BYTES)
-                .build()
-
-            val client = SMBClient(config)
+            val client = SMBClient(buildConfig())
             val connection = client.connect(endpoint.host, endpoint.port)
             val session = connection.authenticate(
                 AuthenticationContext(endpoint.username, endpoint.password.toCharArray(), endpoint.domain),
@@ -119,6 +127,29 @@ class SmbClient(
             }
             return share
         }
+    }
+
+    /**
+     * 枚举服务器上的共享（SRVSVC / NetrShareEnum）。
+     *
+     * 走**独立的临时连接**而不是进程级句柄池：这是设置页的一次性动作，此时共享名通常还
+     * 是空的（用户正因为不知道才要枚举），复用池子既拿不到端点、也会和正常读取路径互相
+     * 干扰——枚举失败不该把已经在工作的会话一起拖下水。
+     */
+    suspend fun enumerateShares(): Result<List<SmbShareEnumerator.Share>> = withIOContext {
+        runCatching {
+            val endpoint = endpointOrNull(requireShare = false)
+                ?: throw IllegalStateException("枚举共享至少需要主机与用户名（密码可留空）")
+            SMBClient(buildConfig()).use { client ->
+                client.connect(endpoint.host, endpoint.port).use { connection ->
+                    connection.authenticate(
+                        AuthenticationContext(endpoint.username, endpoint.password.toCharArray(), endpoint.domain),
+                    ).use { session ->
+                        SmbShareEnumerator.enumerate(session, endpoint.host).getOrThrow()
+                    }
+                }
+            }
+        }.recoverCatching { error -> throw describeFailure(error) }
     }
 
     /** 已建立连接的描述（端点 + 协商出的方言），供设置页「测试连接」展示；未连接时返回 null。 */
