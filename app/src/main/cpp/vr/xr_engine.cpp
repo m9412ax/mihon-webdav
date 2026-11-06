@@ -295,8 +295,8 @@ bool XrEngine::createSystem(std::string& error) {
         LOGI("设备 %s vendor=%u 最大纹理=%ux%u 最大层=%u 位置追踪=%d 朝向追踪=%d", props.systemName,
              props.vendorId, props.graphicsProperties.maxSwapchainImageWidth,
              props.graphicsProperties.maxSwapchainImageHeight, props.graphicsProperties.maxLayerCount,
-             static_cast<int>(props.systemTrackingProperties.positionTracking),
-             static_cast<int>(props.systemTrackingProperties.orientationTracking));
+             static_cast<int>(props.trackingProperties.positionTracking),
+             static_cast<int>(props.trackingProperties.orientationTracking));
     }
 
     uint32_t configCount = 0;
@@ -973,7 +973,7 @@ void XrEngine::renderLoop() {
                     const Vec3 right = toVec(views_[locatedViews - 1].pose.position);
                     anchor.position = toXr((toVec(views_[0].pose.position) + right) * 0.5f);
                 } else if (!anchorCaptured_ || recenterRequested_.exchange(false)) {
-                    anchor.position = toVec(views_[0].pose.position);
+                    anchor.position = views_[0].pose.position;
                     anchorPose_ = anchor;
                     anchorCaptured_ = true;
                 } else {

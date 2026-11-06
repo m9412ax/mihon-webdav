@@ -17,12 +17,21 @@
 #include <thread>
 #include <vector>
 
+// CMake 也定义了这两个宏，这里兜底给不走 CMake 的包含方（比如将来的独立测试程序）。
+// 必须用 #ifndef：同一份定义给两遍，-Wall 下每个编译单元都会刷两条 warning。
+#ifndef XR_USE_PLATFORM_ANDROID
 #define XR_USE_PLATFORM_ANDROID
+#endif
+#ifndef XR_USE_GRAPHICS_API_OPENGL_ES
 #define XR_USE_GRAPHICS_API_OPENGL_ES
+#endif
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES3/gl3.h>
 #include <android/asset_manager.h>
+// openxr_platform.h 在 XR_USE_PLATFORM_ANDROID 下会声明带 jobject 的函数指针类型，
+// 它自己不包含 jni.h，顺序错了就是 "unknown type name 'jobject'"。
+#include <jni.h>
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 

@@ -146,24 +146,31 @@ jobs:
           python3 - <<'PY'
           import pathlib, re, sys
           src = pathlib.Path('app/src/main/cpp/vr/shaders.h').read_text(encoding='utf-8')
-          blocks = re.findall(r'R"GLSL\((.*?)\)GLSL"', src, re.S)
+          # 锚定到「常量定义 + GLSL 定界符」，不然注释里提到这对定界符就会被当成一段源码，
+          # 多切出一段几个字符的垃圾文件。
+          blocks = re.findall(r'const char\*\s+(\w+)\s*=\s*R"GLSL\((.*?)\)GLSL"', src, re.S)
           if len(blocks) < 2:
               print(f'::error::从 shaders.h 只抠出 {len(blocks)} 段 GLSL，raw string 标记可能被改坏了')
               sys.exit(1)
           out = pathlib.Path('build/glsl')
-          for body in blocks:
+          for name, body in blocks:
               kind = 'vert' if 'in vec2 aPos' in body else 'frag'
-              path = out / f'warp.{kind}'
+              path = out / f'{name}.{kind}'
               path.write_text(body, encoding='utf-8')
               head = body.strip().splitlines()[0]
               print(f'{path}: {kind} {len(body)} chars, first line = {head!r}')
           PY
-          for stage in vert frag; do
-            f="build/glsl/warp.$stage"
-            [ -f "$f" ] || { echo "::error::缺少 $f"; exit 1; }
+          shopt -s nullglob
+          files=(build/glsl/*.vert build/glsl/*.frag)
+          if [ "${#files[@]}" -lt 2 ]; then
+            echo "::error::只准备出 ${#files[@]} 个着色器文件，至少要有 vert + frag"
+            exit 1
+          fi
+          for f in "${files[@]}"; do
+            case "$f" in *.vert) stage=vert ;; *.frag) stage=frag ;; *) echo "跳过 $f"; continue ;; esac
             echo "=== glslang $f ==="
             cat "$f"
-            # -G 走 OpenGL 语义；-O 关优化，报错行号才对得上源码
-            glslangValidator -G -O -S "$stage" -e main -o "build/glsl/warp.$stage.o" "$f"
+            # -G 走 OpenGL 语义（不是 Vulkan SPIR-V）：`#version 300 es` 只在 OpenGL 语义下合法。
+            glslangValidator -G -S "$stage" -e main -o "$f.o" "$f"
           done
           echo "着色器语法/语义检查通过"
