@@ -53,6 +53,18 @@ class SmbPreferences(
     fun isConfigured(): Boolean =
         host.get().isNotBlank() && share.get().isNotBlank() && username.get().isNotBlank()
 
+    /**
+     * 上次「测试连接」的完整结果文本（含根因与因果链）。
+     *
+     * 为什么要单独存起来显示：toast 宽度有限会把长错误**截断**（真机上就是这样把
+     * `ExecutionException: com.hie…` 截掉的），而设置项的 subtitle 会换行、能完整看到。
+     * 用 appStateKey —— 这是应用状态、不是用户设置，不该进备份，也不该被同步带走。
+     */
+    val lastTestResult: Preference<String> = preferenceStore.getString(
+        Preference.appStateKey("smb_last_test_result"),
+        "",
+    )
+
     companion object {
         const val DEFAULT_PORT = 445
     }

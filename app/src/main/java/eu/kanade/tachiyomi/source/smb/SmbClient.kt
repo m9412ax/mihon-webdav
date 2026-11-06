@@ -23,6 +23,8 @@ import tachiyomi.core.common.util.lang.withIOContext
 import tachiyomi.core.common.util.system.logcat
 import java.io.File
 import java.io.IOException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.util.EnumSet
 import java.util.concurrent.TimeUnit
 
@@ -223,7 +225,12 @@ class SmbClient(
 
     /**
      * 设置页「测试连接」：建连 + 列一次共享根目录，返回可直接展示的结果描述。
-     * 失败时 [Result.failure] 携带真实原因（认证失败 / 主机不可达 / 共享名不存在）。
+     *
+     * ⚠️ 失败原因必须**解包到根因**再返回：smbj 的 `PromiseBackedFuture.get()` 会把任何
+     * Throwable 重新包成 `ExecutionException(t)`，所以最外层永远是
+     * `java.util.concurrent.ExecutionException: ...`，对用户（和对我们排查）毫无信息量。
+     * 真正的线索在 cause 链最深处（`SMBApiException` 的状态码 / `UnknownHostException` /
+     * `SocketTimeoutException` 等），这里一路取到最后一个带 message 的 cause。
      */
     suspend fun testConnection(): Result<String> = withIOContext {
         runCatching {
@@ -231,7 +238,30 @@ class SmbClient(
                 val rootCount = share.list("").size
                 "${describeConnection().orEmpty()}：根目录 $rootCount 项"
             }
+        }.recoverCatching { error ->
+            logcat(LogPriority.ERROR, error) { "SMB: 测试连接失败" }
+            throw describeFailure(error)
         }
+    }
+
+    /**
+     * 把 smbj 的包装异常翻译成可据此行动的信息：给出根因 + 最短因果链。
+     * 返回的异常仍带原始 cause，logcat 里能看到完整栈。
+     */
+    private fun describeFailure(original: Throwable): Throwable {
+        // 取 cause 链时限定深度：理论上 cause 可能自引用，无界遍历会挂死在错误提示里
+        val chain = generateSequence(original) { it.cause }.take(4).toList()
+        val root = chain.last()
+        val hint = when (root) {
+            is UnknownHostException -> "主机名/IP 不可达：确认手机与 NAS 在同一网段，或直接填 IP"
+            is SocketTimeoutException -> "连接超时：NAS 可能在待机、445 被拦截，或不在同一网段"
+            is SMBApiException -> "服务器拒绝：状态 0x%08x（常见原因：账号或口令错误、禁用了 guest、共享名不存在）"
+                .format(root.statusCode)
+            is IOException -> "网络层失败：445 端口不通、被防火墙拦截，或 NAS 只启用了 SMB1"
+            else -> root.javaClass.simpleName
+        }
+        val trace = chain.joinToString(" ← ") { "${it.javaClass.simpleName}: ${it.message}" }
+        return IllegalStateException("$hint\n$trace", original)
     }
 
     // ===================== 会话生命周期 =====================

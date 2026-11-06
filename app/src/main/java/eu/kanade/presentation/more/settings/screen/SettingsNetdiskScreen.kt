@@ -248,9 +248,9 @@ object SettingsNetdiskScreen : SearchableSettings {
                 },
             )
 
-        fun configuredHint(preference: PreferenceData<String>, what: String) =
-            if (preference.get().isNotBlank()) "已填$what" else "未填$what"
-
+        // ⚠️ 这里一律**不**显示「已填/未填」：subtitle 是组合期算出来的，填完保存后列表不会
+        // 重组，界面上会停留在旧状态（真机上就出现过「未填用户名」却已经拿用户名去连的假象）。
+        // 配置是否真的可用，一律以下面「上次测试结果」那行为准。
         return Preference.PreferenceGroup(
             title = "SMB / NAS（阅读）",
             preferenceItems = listOf(
@@ -263,29 +263,42 @@ object SettingsNetdiskScreen : SearchableSettings {
                 smbField("SMB：端口", "默认 445；留空或填错都按 445 处理", smbPreferences.port),
                 smbField("SMB：共享名", "共享文件夹名本身，不含主机与子路径，例如 comics", smbPreferences.share),
                 smbField("SMB：域 / 工作组", "家用 NAS 与 Windows 工作组留空即可，加域的机器才需要填", smbPreferences.domain),
-                smbField("SMB：用户名", configuredHint(smbPreferences.username, "用户名"), smbPreferences.username),
-                smbField("SMB：密码", configuredHint(smbPreferences.password, "密码（不显示）"), smbPreferences.password),
+                smbField("SMB：用户名", "NAS 上用于访问该共享的账号", smbPreferences.username),
+                smbField("SMB：密码", "不会显示在列表里；也不会被写进备份或同步到云端", smbPreferences.password),
                 Preference.PreferenceItem.TextPreference(
                     title = "SMB：测试连接",
-                    subtitle = if (smbPreferences.isConfigured()) {
-                        "已配置（主机 / 共享名 / 用户名齐全）"
-                    } else {
-                        "未配置：主机、共享名、用户名三项必填"
-                    },
+                    subtitle = "建连并列出共享根目录；失败会弹出完整原因",
                     onClick = {
                         scope.launch {
                             if (!smbPreferences.isConfigured()) {
-                                context.toast("SMB 未配置：主机、共享名、用户名三项必填")
+                                val msg = "未配置：主机、共享名、用户名三项必填（密码可留空）"
+                                smbPreferences.lastTestResult.set(msg)
+                                context.toast(msg)
                                 return@launch
                             }
                             smbClient.testConnection()
-                                .onSuccess { context.toast("SMB 连接成功：$it") }
+                                .onSuccess {
+                                    smbPreferences.lastTestResult.set("连接成功：$it")
+                                    context.toast("SMB 连接成功")
+                                }
                                 .onFailure { e ->
-                                    // 直接把真实原因给用户：认证失败 / 主机不可达 / 共享名不存在
-                                    // 三者的处理方式完全不同，笼统一句「连接失败」没法排查
-                                    context.toast("SMB 连接失败：${e.message ?: e.javaClass.simpleName}")
+                                    val msg = e.message ?: e.javaClass.simpleName
+                                    smbPreferences.lastTestResult.set("连接失败：$msg")
+                                    // 用对话框而不是 toast：真机上 toast 被限制在两行，
+                                    // 正好把 smbj 的根因截掉（`ExecutionException: com.hie…`），
+                                    // 而排查需要的恰恰是那半句。对话框可换行、可滚动。
+                                    android.app.AlertDialog.Builder(context)
+                                        .setTitle("SMB 连接失败")
+                                        .setMessage(msg)
+                                        .setPositiveButton("好", null)
+                                        .show()
                                 }
                         }
+                    },
+                ),
+                Preference.PreferenceItem.InfoPreference(
+                    smbPreferences.lastTestResult.get().ifBlank {
+                        "上次测试结果：还没测过。填好上面几项后点「SMB：测试连接」。"
                     },
                 ),
             ),
