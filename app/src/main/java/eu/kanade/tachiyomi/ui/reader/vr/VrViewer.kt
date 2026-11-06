@@ -509,7 +509,8 @@ class VrViewer(private val activity: ReaderActivity) : Viewer {
                     continue
                 }
 
-                val depthJob = synchronized(pendingDepth) { pendingDepth.poll() } ?: break
+                // kotlin.collections.ArrayDeque 不是 java.util 的那个，没有 poll()。
+                val depthJob = synchronized(pendingDepth) { pendingDepth.removeFirstOrNull() } ?: break
                 val (page, vrPage) = depthJob
                 // 这页已经被淘汰、或用户早翻走了并且它也不在预读窗口里，就别再花几秒算它。
                 if (vrPage.released || vrPage.depthBitmap != null) continue
