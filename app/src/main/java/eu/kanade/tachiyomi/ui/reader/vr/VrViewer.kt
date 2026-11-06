@@ -380,13 +380,13 @@ class VrViewer(private val activity: ReaderActivity) : Viewer {
         schedulePrefetch(page)
     }
 
-    /** 只有「这还是用户要看的那一页」才下发，否则快速连翻时后完成的旧页会把新页盖掉。 */
     /** 只有深度变了的一帧：页面不动，避免十几 MB 的整页重传。 */
     private fun deliverDepth(vrPage: VrPage) {
         val depth = vrPage.depthBitmap ?: return
         VrBridge.setDepth(depth, vrPage.serial)
     }
 
+    /** 只有「这还是用户要看的那一页」才下发，否则快速连翻时后完成的旧页会把新页盖掉。 */
     private fun deliver(page: ReaderPage, vrPage: VrPage) {
         if (currentPage?.index != page.index || vrPage.released) return
         // 深度先、页面后：原生层的深度只在 serial 追上当前页时才采用，
@@ -410,8 +410,9 @@ class VrViewer(private val activity: ReaderActivity) : Viewer {
         if (!readerPreferences.vrDepthEnabled.get()) return false
         // 缓存命中时深度可能早就算好了，别再来一遍。
         if (vrPage.depthBitmap != null) return false
-        val estimator = ensureEstimator() ?: return false
-        val model = VrDepthModel.fromId(readerPreferences.vrDepthModel.get())
+        val (estimator, model) = ensureEstimator() ?: return false
+        // 缓存键里的模型必须就是真正在跑的那个。分开读偏好的话，用户在推理进行的
+        // 空档换了模型，就会拿 A 的输出写进 B 键名的缓存里。
         val key = runCatching {
             val chapter = readerPage.chapter.chapter
             depthCache.keyFor(model, chapter.manga_id ?: 0L, chapter.url, readerPage.index)
@@ -425,11 +426,19 @@ class VrViewer(private val activity: ReaderActivity) : Viewer {
         return true
     }
 
-    /** 懒加载 ONNX 会话。模型没下载过就返回 null，界面据此退回纯平面显示。 */
-    private fun ensureEstimator(): VrDepthEstimator? {
+    /**
+     * 懒加载 ONNX 会话。模型没下载过就返回 null，界面据此退回纯平面显示。
+     *
+     * 换模型时必须先关掉旧的：一个 int8 small 会话要常驻 30 MB 左右权重，
+     * 只把 [estimator] 换掉的话旧会话没人关，切几次模型就是几份内存。
+     */
+    private fun ensureEstimator(): Pair<VrDepthEstimator, VrDepthModel>? {
         val model = VrDepthModel.fromId(readerPreferences.vrDepthModel.get())
         estimator?.let { existing ->
-            return if (estimatorModelId == model.id) existing else null
+            if (estimatorModelId == model.id) return existing to model
+            runCatching { existing.close() }
+            estimator = null
+            estimatorModelId = null
         }
         val file = modelStore.localFile(model)?.takeIf { modelStore.isReady(model) } ?: return null
         val opened = runCatching { VrDepthEstimator(file, model) }
@@ -437,7 +446,7 @@ class VrViewer(private val activity: ReaderActivity) : Viewer {
             .getOrNull() ?: return null
         estimator = opened
         estimatorModelId = model.id
-        return opened
+        return opened to model
     }
 
     private fun schedulePrefetch(page: ReaderPage) {

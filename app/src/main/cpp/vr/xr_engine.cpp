@@ -767,10 +767,14 @@ void XrEngine::uploadIfDirty() {
         }
         if (depthDirty_) {
             // 深度是跟着「某一页」算出来的，而且往往比页本身晚到（推理要时间），
-            // 也可能被提前预读好。所以只有 serial 对得上当前页才换上去：
+            // 也可能被提前预读好。所以只有 serial 与当前页**完全相等**才换上去：
             // 对不上就留着——拿上一张图的深度去 warp 这一张图，会浮出明显的鬼影。
-            // serial==0 表示「与页无关的通用深度」，留给调试用。
-            if (pendingDepth_.serial == 0 || pendingDepth_.serial <= activeSerial_) {
+            //
+            // 不能用 <= 或 >= 判断新旧：serial 是「第几次解码」的计数器而不是页号，
+            // 翻回一张早已缓存的页会复用那个旧的、更小的 serial，用大小关系就会把
+            // 它当成过期数据丢掉（或者更糟：错配到当前页上）。
+            // serial==0 保留给「与页无关的通用深度」，方便调试。
+            if (pendingDepth_.serial == 0 || pendingDepth_.serial == activeSerial_) {
                 depth = pendingDepth_;
                 doDepth = true;
                 depthDirty_ = false;
