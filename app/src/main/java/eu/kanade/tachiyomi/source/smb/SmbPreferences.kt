@@ -36,7 +36,14 @@ class SmbPreferences(
      */
     val port: Preference<String> = preferenceStore.getString("smb_port", DEFAULT_PORT.toString())
 
-    /** 共享名（Windows 的「共享文件夹名」、群晖的「共享文件夹」），不含主机与路径。 */
+    /**
+     * 共享名。⚠️ 这里**不是**「要访问哪个共享」——路径本身已经带了共享名
+     * （形如 `/<共享名>/子路径`，见 [SmbClient] 的路径模型）。
+     *
+     * 这个字段的唯一作用是**兜底**：当服务器拒绝 SRVSVC 共享枚举（禁用 IPC$、
+     * 或账号没有枚举权限）时，列根目录会退回只给出这一个共享。正常情况留空即可，
+     * 云盘里会直接列出服务器上的全部共享供你随意进入。
+     */
     val share: Preference<String> = preferenceStore.getString("smb_share", "")
 
     /** 域 / 工作组。家用 NAS 与 Windows 工作组留空即可；加入域的机器才需要填。 */
@@ -49,9 +56,10 @@ class SmbPreferences(
     /**
      * 是否已配置。与网盘源同口径（凭据填了就算配置好），不设独立的启用开关：
      * 少一个「填了却忘打开」的坑，连接是否真的可用由设置页的「测试连接」验证。
+     *
+     * 共享名不在必填之列 —— 路径已经带了共享名，这一项只是枚举被拒时的兜底。
      */
-    fun isConfigured(): Boolean =
-        host.get().isNotBlank() && share.get().isNotBlank() && username.get().isNotBlank()
+    fun isConfigured(): Boolean = host.get().isNotBlank() && username.get().isNotBlank()
 
     /**
      * 上次「测试连接」的完整结果文本（含根因与因果链）。

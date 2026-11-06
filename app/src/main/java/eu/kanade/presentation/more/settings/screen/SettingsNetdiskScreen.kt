@@ -256,45 +256,51 @@ object SettingsNetdiskScreen : SearchableSettings {
             preferenceItems = listOf(
                 Preference.PreferenceItem.InfoPreference(
                     "只读访问 SMB 共享（群晖 / 威联通 / Windows 共享 / Samba 等），把 NAS 上的漫画" +
-                    "当成一个图源读。仅支持 SMB2 / SMB3 —— 服务器若只开了 SMB1，需先在 NAS 侧启用 SMB2。" +
+                    "当成一个图源读。仅支持 SMB2 / SMB3 —— 服务器若只开了 SMB1，需先在 NAS 侧启用 SMB2。\n\n" +
+                    "路径形如「/<共享名>/子路径」：云盘根层会直接列出这台服务器上的所有共享，" +
+                    "点进去就是该共享的内容，不用先决定连哪个共享。" +
                     "配置好后到「书架 → 云盘 → 添加网盘 / SMB 文件夹」挂载要看的目录。",
                 ),
                 smbField("SMB：主机", "NAS 的 IP 或主机名，例如 192.168.1.10", smbPreferences.host),
                 smbField("SMB：端口", "默认 445；留空或填错都按 445 处理", smbPreferences.port),
-                smbField("SMB：共享名", "共享文件夹名本身，不含主机与子路径，例如 comics", smbPreferences.share),
+                smbField(
+                    "SMB：兜底共享名（可留空）",
+                    "留空即可。只有当服务器禁止枚举共享（禁用 IPC\$ 或账号无枚举权限）时，" +
+                        "才需要在这里填一个已知共享名，根层会退回只显示它。",
+                    smbPreferences.share,
+                ),
                 Preference.PreferenceItem.TextPreference(
-                    title = "SMB：列出共享…",
-                    subtitle = "不知道共享叫什么就点这个：连上服务器读出所有共享，选中即自动填入上面的共享名",
+                    title = "SMB：测试共享枚举…",
+                    subtitle = "单独试一次「能不能列出共享」，据此判断要不要填上面那个兜底项",
                     onClick = {
                         scope.launch {
                             smbClient.enumerateShares()
                                 .onSuccess { shares ->
                                     val diskShares = shares.filter { it.isDiskTree && !it.isAdminShare }
-                                    if (diskShares.isEmpty()) {
-                                        showSmbMessage(
-                                            context,
-                                            "SMB 共享枚举",
-                                            "这台服务器没有可浏览的文件共享（共 ${shares.size} 项，" +
-                                                "都是 IPC/打印机或结尾带 \$ 的管理共享）。" +
-                                                "请在 NAS 上确认共享名后手动填到上一项。",
-                                        )
-                                        return@onSuccess
-                                    }
-                                    val labels = diskShares.map { share ->
-                                        if (share.remark.isBlank()) share.name else "${share.name}　（${share.remark}）"
-                                    }
-                                    android.app.AlertDialog.Builder(context)
-                                        .setTitle("选择共享")
-                                        .setItems(labels.toTypedArray()) { _, which ->
-                                            // 只写偏好、不建连接：共享名变了，下次访问会按新端点重建会话
-                                            smbPreferences.share.set(diskShares[which].name)
-                                            context.toast("已填入共享名「${diskShares[which].name}」")
-                                        }
-                                        .setNegativeButton("取消", null)
-                                        .show()
+                                    showSmbMessage(
+                                        context,
+                                        "SMB 共享枚举",
+                                        if (diskShares.isEmpty()) {
+                                            "能连上，但没有任何可浏览的文件共享（共 ${shares.size} 项，" +
+                                                "都是 IPC\$ / 打印机 / 结尾带 \$ 的管理共享）。" +
+                                                "请在上面填一个已知共享名作为兜底。"
+                                        } else {
+                                            "可浏览共享 ${diskShares.size} 个：\n\n" +
+                                                diskShares.joinToString("\n") { share ->
+                                                    if (share.remark.isBlank()) share.name
+                                                    else "${share.name}　（${share.remark}）"
+                                                } +
+                                                "\n\n到「书架 → 云盘 → 添加网盘 / SMB 文件夹」就能直接进这些共享。"
+                                        },
+                                    )
                                 }
                                 .onFailure { e ->
-                                    showSmbMessage(context, "SMB 共享枚举失败", e.message ?: e.javaClass.simpleName)
+                                    showSmbMessage(
+                                        context,
+                                        "SMB 共享枚举失败",
+                                        (e.message ?: e.javaClass.simpleName) +
+                                            "\n\n如果连得上但枚举被拒，请在「兜底共享名」里填一个已知共享名。",
+                                    )
                                 }
                         }
                     },
@@ -308,7 +314,7 @@ object SettingsNetdiskScreen : SearchableSettings {
                     onClick = {
                         scope.launch {
                             if (!smbPreferences.isConfigured()) {
-                                val msg = "未配置：主机、共享名、用户名三项必填（密码可留空）"
+                                val msg = "未配置：主机与用户名必填（共享名与密码都可留空）"
                                 smbPreferences.lastTestResult.set(msg)
                                 context.toast(msg)
                                 return@launch

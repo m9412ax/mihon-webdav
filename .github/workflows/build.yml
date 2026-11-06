@@ -86,7 +86,24 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      # 固定签名身份：否则每次 runner 都新生成一个 debug keystore，
+      # 相邻两次构建的 APK 签名不同，升级安装会报 INSTALL_FAILED_UPDATE_INCOMPATIBLE，
+      # 每轮迭代都得先卸载（书架/进度随之丢失）。
+      #
+      # app/build.gradle.kts 里已有上游的这条通道：MIHON_GITHUB_RELEASE 为真时读取
+      # storeFileBase64 / storePassword / keyAlias / keyPassword 覆盖 debug signingConfig，
+      # 而 release 的 signingConfig 就是 debug 的 —— 所以构建脚本一行都不用改。
+      #
+      # ⚠️ 来自 fork 的 pull_request 拿不到 secrets（GitHub 的限制）。这里用
+      # 「secret 非空才启用」而不是硬开：拿不到就退回 runner 的临时 keystore，
+      # 构建照样成功，只是那次产物无法覆盖安装。
       - name: Build release APK
+        env:
+          MIHON_GITHUB_RELEASE: ${{ secrets.MIHONW_KEYSTORE_B64 != '' }}
+          storeFileBase64: ${{ secrets.MIHONW_KEYSTORE_B64 }}
+          storePassword: mihonw-fork-2026
+          keyAlias: MIHONW
+          keyPassword: mihonw-fork-2026
         run: ./gradlew assembleRelease --stacktrace
 
       # 产物不上传的话，CI 跑完了也拿不到 APK（原工作流只有 build、没有产出步骤）

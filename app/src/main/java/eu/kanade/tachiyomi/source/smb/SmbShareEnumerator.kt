@@ -31,7 +31,7 @@ import java.util.EnumSet
  * ⚠️ 只在「设置 → 选择共享」里被调用，不参与任何读取路径；失败一律返回
  * [Result.failure] 并带上可诊断的原因，不影响「手填共享名」这条已经能用的路径。
  */
-internal object SmbShareEnumerator {
+object SmbShareEnumerator {
 
     /**
      * 一个共享。
@@ -211,7 +211,7 @@ internal object SmbShareEnumerator {
         // alloc_hint = 从 alloc_hint 之后算起的字节数；这里与 jCIFS 一致取「总长 - 16」
         body.putInt(HEADER_LEN + 8 + stubBytes.size - HEADER_LEN)
         body.putShort(0) // context id
-        body.putShort(OPNUM_NETR_SHARE_ENUM)
+        body.putShort(OPNUM_NETR_SHARE_ENUM.toShort())
         body.put(stubBytes)
         return pdu(PTYPE_REQUEST, callId, body.array())
     }
