@@ -19,6 +19,11 @@ import eu.kanade.tachiyomi.ui.reader.model.ReaderChapter
 import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
 import eu.kanade.tachiyomi.ui.reader.model.ViewerChapters
 import eu.kanade.tachiyomi.ui.reader.viewer.Viewer
+import eu.kanade.tachiyomi.util.vr.VrDepthDiskCache
+import eu.kanade.tachiyomi.util.vr.VrDepthEstimator
+import eu.kanade.tachiyomi.util.vr.VrDepthModel
+import eu.kanade.tachiyomi.util.vr.VrDepthModelStore
+import eu.kanade.tachiyomi.util.vr.toAlphaBitmap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -33,6 +38,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import logcat.LogPriority
 import mihon.app.di.appGraph
 import tachiyomi.core.common.util.system.logcat
+import java.io.File
 import java.io.InputStream
 import java.util.PriorityQueue
 
@@ -76,6 +82,16 @@ class VrViewer(private val activity: ReaderActivity) : Viewer {
     private val pending = PriorityQueue<DecodeJob>(compareBy { it.distance })
     private var workerRunning = false
     private var serialCounter = 0L
+
+    // 深度这条链路只在 vrDepthEnabled 时才真正干活，但对象本身一直存在：
+    // 开关一打开就要能立刻用，不该在渲染线程上等一次磁盘扫描。
+    private val modelStore = VrDepthModelStore(File(activity.filesDir, "vr-models"))
+    private val depthCache = VrDepthDiskCache(
+        File(activity.cacheDir, "vr-depth"),
+        readerPreferences.vrDepthCacheMb.get() * 1024L * 1024L,
+    )
+    private var estimator: VrDepthEstimator? = null
+    private var estimatorModelId: String? = null
 
     private val rootView: FrameLayout
     private val statusText: TextView
@@ -210,6 +226,11 @@ class VrViewer(private val activity: ReaderActivity) : Viewer {
             cachedBytes = 0
         }
         VrBridge.stop()
+        // ONNX 会话持有整份权重常驻内存（int8 small 也要 30MB 左右），
+        // 退出阅读器时必须关掉，否则换一本书就叠加一次。
+        runCatching { estimator?.close() }
+        estimator = null
+        estimatorModelId = null
         pages = emptyList()
         currentPage = null
         currentChapter = null
@@ -344,17 +365,63 @@ class VrViewer(private val activity: ReaderActivity) : Viewer {
     }
 
     /** 只有「这还是用户要看的那一页」才下发，否则快速连翻时后完成的旧页会把新页盖掉。 */
+    /** 只有深度变了的一帧：页面不动，避免十几 MB 的整页重传。 */
+    private fun deliverDepth(vrPage: VrPage) {
+        val depth = vrPage.depthBitmap ?: return
+        VrBridge.setDepth(depth, vrPage.serial)
+    }
+
     private fun deliver(page: ReaderPage, vrPage: VrPage) {
         if (currentPage?.index != page.index || vrPage.released) return
         // 深度先、页面后：原生层的深度只在 serial 追上当前页时才采用，
         // 所以这个顺序不会错帧，反过来则可能让新一帧配上旧深度。
-        vrPage.depth?.let { VrBridge.setDepth(it, vrPage.serial) }
+        deliverDepth(vrPage)
         if (!VrBridge.setPage(vrPage.bitmap, vrPage.serial)) {
             renderStatus("页面上传失败：${VrBridge.lastError()}")
             return
         }
         deliveredSerial = vrPage.serial
         renderStatus("")
+    }
+
+    /**
+     * 给这一页补深度图：先查磁盘缓存，没有再推理。
+     *
+     * 页面本身**不**等这一步——先按平面投出去，深度算好后再补一帧。SD835 上单帧推理要
+     * 几百毫秒到几秒，让当前页等深度等于把「翻页立刻出图」这个最基本的体验赔进去。
+     */
+    private fun attachDepth(readerPage: ReaderPage, vrPage: VrPage): Boolean {
+        if (!readerPreferences.vrDepthEnabled.get()) return false
+        // 缓存命中时深度可能早就算好了，别再来一遍。
+        if (vrPage.depthBitmap != null) return false
+        val estimator = ensureEstimator() ?: return false
+        val model = VrDepthModel.fromId(readerPreferences.vrDepthModel.get())
+        val key = runCatching {
+            val chapter = readerPage.chapter.chapter
+            depthCache.keyFor(model, chapter.manga_id ?: 0L, chapter.url, readerPage.index)
+        }.getOrNull() ?: return false
+
+        val map = depthCache.read(key) ?: estimator.estimate(vrPage.bitmap)?.also {
+            depthCache.write(key, it)
+        } ?: return false
+        if (vrPage.released) return false
+        vrPage.attachDepth(map.toAlphaBitmap())
+        return true
+    }
+
+    /** 懒加载 ONNX 会话。模型没下载过就返回 null，界面据此退回纯平面显示。 */
+    private fun ensureEstimator(): VrDepthEstimator? {
+        val model = VrDepthModel.fromId(readerPreferences.vrDepthModel.get())
+        estimator?.let { existing ->
+            return if (estimatorModelId == model.id) existing else null
+        }
+        val file = modelStore.localFile(model)?.takeIf { modelStore.isReady(model) } ?: return null
+        val opened = runCatching { VrDepthEstimator(file, model) }
+            .onFailure { logcat(LogPriority.ERROR, it) { "打开深度模型 ${model.id} 失败" } }
+            .getOrNull() ?: return null
+        estimator = opened
+        estimatorModelId = model.id
+        return opened
     }
 
     private fun schedulePrefetch(page: ReaderPage) {
@@ -399,6 +466,9 @@ class VrViewer(private val activity: ReaderActivity) : Viewer {
                 val result = decode(job.page) ?: continue
                 putCache(job.page.index, result)
                 deliver(job.page, result)
+                // 页面已经投出去了，这时候再补深度。只走 [deliverDepth]：
+                // 整页位图有十几 MB，为了一张几百 KB 的深度图重传一遍页面是纯粹的浪费。
+                if (attachDepth(job.page, result)) deliverDepth(result)
             }
             synchronized(this@VrViewer) { workerRunning = false }
         }
@@ -417,7 +487,7 @@ class VrViewer(private val activity: ReaderActivity) : Viewer {
         return withContext(Dispatchers.Default) {
             val bitmap = decodeScaled(streamFactory, readerPreferences.vrMaxEdgePixels.get())
                 ?: return@withContext null
-            VrPage(serial = ++serialCounter, bitmap = bitmap, depth = null)
+            VrPage(serial = ++serialCounter, bitmap = bitmap)
         }
     }
 
@@ -466,25 +536,37 @@ class VrViewer(private val activity: ReaderActivity) : Viewer {
     private class DecodeJob(val page: ReaderPage, val distance: Int)
 }
 
-/** 一页在 VR 侧的全部产物。[depth] 为 null 表示还没算深度，或深度功能被关闭。 */
+/** 一页在 VR 侧的全部产物。深度是后补的：先出平面，算完再补一帧。 */
 private class VrPage(
     val serial: Long,
     val bitmap: Bitmap,
-    val depth: Bitmap?,
 ) {
+    @Volatile var depthBitmap: Bitmap? = null
+        private set
+
     var released = false
         private set
 
+    fun attachDepth(depth: Bitmap) {
+        if (released) {
+            runCatching { depth.recycle() }
+            return
+        }
+        depthBitmap?.let { runCatching { it.recycle() } }
+        depthBitmap = depth
+    }
+
     fun estimateBytes(): Long =
-        bitmap.allocationByteCount.toLong() + (depth?.allocationByteCount?.toLong() ?: 0L)
+        bitmap.allocationByteCount.toLong() + (depthBitmap?.allocationByteCount?.toLong() ?: 0L)
 
     fun release() {
         if (released) return
         released = true
         runCatching {
             if (!bitmap.isRecycled) bitmap.recycle()
-            if (depth != null && !depth.isRecycled) depth.recycle()
+            depthBitmap?.let { if (!it.isRecycled) it.recycle() }
         }
+        depthBitmap = null
     }
 }
 

@@ -329,6 +329,12 @@ dependencies {
     implementation(libs.smbj)
     // SY <--
 
+    // SY --> VR 2D→3D：单目深度推理。模型本体不打进 APK（运行时从 HF 镜像下载，
+    // 见 VrDepthModelStore），但 ORT 的运行时 .so 必须内置——它没有可下载的
+    // 按需安装通道。AAR 里四个 ABI 的 .so 由上面的 ndk.abiFilters 收敛到两个。
+    implementation(libs.onnxruntime)
+    // SY <--
+
     // Data serialization (JSON, protobuf, xml)
     implementation(libs.bundles.serialization)
 

@@ -414,6 +414,18 @@ class ReaderPreferences(
     /** 关掉时完全不读深度，退化成普通双目投影。深度模型还没下载时就应该关着。 */
     val vrDepthEnabled: Preference<Boolean> = preferenceStore.getBoolean("pref_vr_depth_enabled", false)
 
+    /**
+     * 用哪个单目深度模型。存 id 不存枚举：加一个模型不该让老存档里的值解析不出来，
+     * 取不到时 [eu.kanade.tachiyomi.util.vr.VrDepthModel.fromId] 会退回默认。
+     */
+    val vrDepthModel: Preference<String> = preferenceStore.getString(
+        "pref_vr_depth_model",
+        eu.kanade.tachiyomi.util.vr.VrDepthModel.SMALL_QUANTIZED.id,
+    )
+
+    /** 深度图磁盘缓存的上限。推理一次几百毫秒到几秒，来回翻页不该重算。 */
+    val vrDepthCacheMb: Preference<Int> = preferenceStore.getInt("pref_vr_depth_cache_mb", 256)
+
     /** 屏幕锁在头上（转头画面跟着走）还是锁在空间里（转头能把屏幕甩出视野）。 */
     val vrHeadLocked: Preference<Boolean> = preferenceStore.getBoolean("pref_vr_head_locked", true)
 

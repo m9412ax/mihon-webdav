@@ -18,6 +18,11 @@
 -keep,allowoptimization class uy.kohesive.injekt.** { public protected *; }
 -keep,allowoptimization class com.squareup.zstd.** { public protected *; }
 
+# ONNX Runtime（VR 深度推理）：这一层大量类型只在原生侧被 new/回调出来（OrtStatus、
+# 各 OnnxValue 实现、OrtSession 的内部句柄包装），只保留「我的 Kotlin 直接调到的那些」
+# 不够——被裁掉的类会以 UnsatisfiedLinkError / NoClassDefFoundError 的形式在运行时才出现。
+-keep,allowoptimization class ai.onnxruntime.** { public protected *; }
+
 # From extensions-lib
 -keep,allowoptimization class eu.kanade.tachiyomi.network.interceptor.RateLimitInterceptorKt { public protected *; }
 -keep,allowoptimization class eu.kanade.tachiyomi.network.interceptor.SpecificHostRateLimitInterceptorKt { public protected *; }

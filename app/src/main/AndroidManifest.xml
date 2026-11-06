@@ -34,24 +34,18 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <!-- SY --> 头显阅读（OpenXR）。
-    <!--
-      权限名来自 Khronos 的规范：runtime 侧以该权限保护它的 Binder 服务，应用不声明
-      就连不上。loader 本身打进 APK（app/src/main/jniLibs/<abi>/libopenxr_loader.so），
-      因为 Android 7 起应用不能 dlopen 非公开 SDK 的系统库。
-
-      required="false" 是刻意的：同一份 APK 还要能装在手机上日常用，标成 required
-      会被商店/安装器按设备特性过滤掉。头显没有时 VrViewer 只会显示失败原因，
-      不影响其它阅读模式。
-
-      上面已有的 QUERY_ALL_PACKAGES 顺带解决了 Android 11+ 的包可见性问题——
-      loader 是按包名+类名去找 OpenXRRuntimeService 的，没有可见性时查不到 runtime，
-      报的错还特别像「设备不支持 OpenXR」。
-    -->
+         权限名来自 Khronos 规范：runtime 侧用它保护自己的 Binder 服务，应用不声明就连不上。
+         loader 本身打进 APK（jniLibs 下各 ABI 的 libopenxr_loader.so），因为 Android 7 起
+         应用不能 dlopen 非公开 SDK 的系统库。
+         required=false 是刻意的：同一份 APK 还要能装在手机上日常用，标成 required 会被
+         按设备特性过滤掉。没有头显时 VrViewer 只显示失败原因，不影响其它阅读模式。
+         上面已有的 QUERY_ALL_PACKAGES 顺带解决了 Android 11+ 的包可见性——loader 是按
+         包名+类名去找 OpenXRRuntimeService 的，查不到时报的错特别像「设备不支持 OpenXR」。
     <uses-permission android:name="org.khronos.openxr.permission.OPENXR" />
     <uses-feature
         android:name="android.hardware.vr.headtracking"
         android:required="false" />
-    <!-- SY <--
+    <!-- SY <-->
 
     <application
         android:name=".App"
