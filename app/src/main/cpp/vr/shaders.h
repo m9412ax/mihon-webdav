@@ -17,13 +17,15 @@ namespace mihonvr {
 inline const char* kWarpVertexShader = R"GLSL(#version 300 es
 precision highp float;
 
-in vec2 aPos;                 // 四边形参数，-1..1
+// 位置写死在源码里，而不是靠 glBindAttribLocation：两边都设就是两个真相来源。
+layout(location = 0) in vec2 aPos;   // 四边形参数，-1..1
+
 uniform vec2 uHalf;           // 虚拟屏幕半宽/半高（米）
 uniform vec2 uQuadHalf;       // 几何用的半宽/半高，比 uHalf 略大（见下）
 uniform vec3 uCenter;         // 屏幕中心，锚点空间
 uniform mat4 uProj;           // 该眼的 OpenXR 投影矩阵
 uniform mat3 uEyeRot;         // 该眼视空间 -> 锚点空间
-out vec2 vUv;
+layout(location = 0) out vec2 vUv;
 
 void main() {
     // 出屏的内容会被投到平面轮廓之外，所以几何要放大一点点，否则前景边缘被切掉。
@@ -49,8 +51,8 @@ inline const char* kWarpFragmentShader = R"GLSL(#version 300 es
 precision highp float;
 precision highp sampler2D;
 
-in vec2 vUv;
-out vec4 fragColor;
+layout(location = 0) in vec2 vUv;
+layout(location = 0) out vec4 fragColor;
 
 uniform sampler2D uColor;
 uniform sampler2D uDepth;     // R8，0=远 1=近

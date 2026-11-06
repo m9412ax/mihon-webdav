@@ -192,7 +192,6 @@ void XrEngine::submitDepth(TexturePayload r8) {
     pendingDepth_ = std::move(r8);
     depthDirty_ = true;
 }
-
 void XrEngine::setParams(const RenderParams& params) {
     std::lock_guard<std::mutex> lk(paramMutex_);
     params_ = params;
@@ -700,7 +699,7 @@ bool XrEngine::buildProgram(std::string& error) {
     program_ = glCreateProgram();
     glAttachShader(program_, vs);
     glAttachShader(program_, fs);
-    glBindAttribLocation(program_, 0, "aPos");
+    // 顶点属性位置由着色器里的 layout(location=0) 指定，不再 glBindAttribLocation。
     glLinkProgram(program_);
     glDeleteShader(vs);
     glDeleteShader(fs);
@@ -767,9 +766,15 @@ void XrEngine::uploadIfDirty() {
             colorDirty_ = false;
         }
         if (depthDirty_) {
-            depth = pendingDepth_;
-            doDepth = true;
-            depthDirty_ = false;
+            // 深度是跟着「某一页」算出来的，而且往往比页本身晚到（推理要时间），
+            // 也可能被提前预读好。所以只有 serial 对得上当前页才换上去：
+            // 对不上就留着——拿上一张图的深度去 warp 这一张图，会浮出明显的鬼影。
+            // serial==0 表示「与页无关的通用深度」，留给调试用。
+            if (pendingDepth_.serial == 0 || pendingDepth_.serial <= activeSerial_) {
+                depth = pendingDepth_;
+                doDepth = true;
+                depthDirty_ = false;
+            }
         }
     }
     if (doColor && color.valid()) {

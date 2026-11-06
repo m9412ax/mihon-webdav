@@ -172,15 +172,19 @@ JNIEXPORT jboolean JNICALL Java_eu_kanade_tachiyomi_ui_reader_vr_VrBridge_native
 }
 
 JNIEXPORT jboolean JNICALL Java_eu_kanade_tachiyomi_ui_reader_vr_VrBridge_nativeSetDepth(
-    JNIEnv* env, jobject, jobject bitmap) {
+    JNIEnv* env, jobject, jobject bitmap, jlong serial) {
     auto engine = acquireEngine();
     if (engine == nullptr) return JNI_FALSE;
     mihonvr::TexturePayload payload;
     std::string error;
     if (!withLockedBitmap(env, bitmap, 1, payload, error)) {
         LOGE("深度上传被拒: %s", error.c_str());
+        engine->setError(error);
         return JNI_FALSE;
     }
+    // 深度必须带上它属于哪一页：渲染线程只在 serial 与当前页一致时才换深度图，
+    // 否则会出现「上一张图的深度 warp 这一张图」的鬼影。
+    payload.serial = serial;
     engine->submitDepth(std::move(payload));
     return JNI_TRUE;
 }

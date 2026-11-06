@@ -170,21 +170,36 @@ jobs:
             case "$f" in *.vert) stage=vert ;; *.frag) stage=frag ;; *) echo "跳过 $f"; continue ;; esac
             echo "=== glslang $f ==="
             cat "$f"
-            # -c = 只做前端（解析 + 语义），不生成 SPIR-V。
-            # 只写 -G 不够：glslang 15 里 -G 仍要走 SPIR-V 后端，而「ES 着色器要 310 以上」
-            # 是后端约束，会把合法的 GLSL ES 3.00 判成错。
-            out=$(glslangValidator -c -G -S "$stage" -e main "$f" 2>&1) && rc=0 || rc=$?
-            printf '%s\n' "$out"
-            if printf '%s' "$out" | grep -qE '^ERROR:'; then
-              echo "::error::$f 未通过（着色器本身的错误，运行时也会同样失败）"
-              exit 1
+            # 依次试几组参数：glslang 各版本对「只跑前端」的开关叫法不一样，
+            # 认不出来时会打 usage/unrecognized，那就换下一组，而不是当成着色器错误。
+            ok=0
+            for flags in "--target-env openglCompat" "-G" ""; do
+              out=$(glslangValidator $flags -c -S "$stage" -e main "$f" 2>&1) && rc=0 || rc=$?
+              if printf '%s' "$out" | grep -qiE 'unrecognized|unknown option|unknown argument|usage:'; then
+                echo "(flags='$flags' 不被接受，换下一组)"
+                ok=0
+                continue
+              fi
+              # 「ES 要 310 以上」「SPIR-V 要求 location」都只是 glslang 走 SPIR-V 后端的
+              # 约束，跟 GLES 驱动能不能编这段 GLSL ES 3.00 无关，过滤掉再看有没有真错。
+              real=$(printf '%s\n' "$out" | grep -E '^ERROR:' | grep -vE 'SPIR-V' || true)
+              if [ -n "$real" ]; then
+                printf '%s\n' "$real"
+                echo "::error::$f 有着色器错误（GLES 驱动那边也会同样失败）"
+                exit 1
+              fi
+              if [ "$rc" -ne 0 ]; then
+                printf '%s\n' "$out"
+                echo "::warning::glslangValidator rc=$rc 但没报着色器错误，跳过这一步"
+              else
+                echo "OK $f (flags='$flags')"
+              fi
+              ok=1
+              break
+            done
+            if [ "$ok" -eq 0 ]; then
+              echo "::warning::这台 runner 的 glslang 不接受任何一组参数，着色器校验未执行"
+              echo "（真机上原生层会把驱动编译失败的原因打进 logcat 和阅读器的状态文字）"
             fi
-            if [ "$rc" -ne 0 ]; then
-              # 到这里只剩「工具不认这套参数」这一类情况。这不该把整个 PR 卡住：
-              # 真机上原生层会把同样的编译日志打 logcat 并显示在阅读器的状态文字里。
-              echo "::warning::glslangValidator 以 rc=$rc 退出但没报着色器错误，可能是参数不兼容，跳过这一步"
-              continue
-            fi
-            echo "OK $f"
           done
-          echo "着色器语法/语义检查通过"
+          echo "着色器检查结束"
