@@ -96,8 +96,10 @@ class VrViewer(private val activity: ReaderActivity) : Viewer {
         VrStorage.depthCacheRoot(activity),
         readerPreferences.vrDepthCacheMb.get() * 1024L * 1024L,
     )
-    private var estimator: VrDepthEstimator? = null
-    private var estimatorModelId: String? = null
+    // 会话在 worker 上懒创建、在主线程的 destroy() 里关闭，所以这两个必须 @Volatile；
+    // 真正的并发使用由 VrDepthEstimator 内部的 sessionLock 挡住。
+    @Volatile private var estimator: VrDepthEstimator? = null
+    @Volatile private var estimatorModelId: String? = null
 
     private val rootView: FrameLayout
     private val statusText: TextView

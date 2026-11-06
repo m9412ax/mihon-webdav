@@ -221,7 +221,18 @@ class VrDepthEstimator(modelFile: File, private val model: VrDepthModel) {
         return normalize(output, width, height)
     }
 
-    private fun infer(width: Int, height: Int, input: FloatArray): FloatArray? {
+    /**
+     * 与 [close] 共用 [sessionLock]：退出阅读器时主线程会关会话，而 worker 上可能正好
+     * 有一次推理在跑。ORT 的会话句柄被并发 close 之后再用到，是原生层崩溃，
+     * 不是能被 catch 住的 Java 异常。
+     */
+    private fun infer(width: Int, height: Int, input: FloatArray): FloatArray? =
+        synchronized(sessionLock) {
+            if (closed) return null
+            inferLocked(width, height, input)
+        }
+
+    private fun inferLocked(width: Int, height: Int, input: FloatArray): FloatArray? {
         // 刻意不去探测模型的固定输入形状、也就完全不碰 TensorInfo：这几个类在不同
         // onnxruntime 版本里换过归属，而动态形状本来就用不上它。真遇到静态形状的导出，
         // ORT 会在这里抛异常，我们返回 null，画面退化成平面——不会卡住也不会崩。
@@ -295,8 +306,15 @@ class VrDepthEstimator(modelFile: File, private val model: VrDepthModel) {
     private fun align(scaled: Double, divisor: Int): Int =
         max(divisor, min(floor(scaled / divisor).toInt() * divisor, MAX_SIDE))
 
+    private val sessionLock = Any()
+    private var closed = false
+
     fun close() {
-        runCatching { session.close() }
+        synchronized(sessionLock) {
+            if (closed) return
+            closed = true
+            runCatching { session.close() }
+        }
     }
 
     private companion object {
