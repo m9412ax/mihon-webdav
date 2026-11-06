@@ -398,6 +398,18 @@ class VrDepthDiskCache(private val root: File, private val maxBytes: Long) {
     }
 }
 
+/**
+ * VR 相关的存储路径。集中一处，是为了让「设置页显示已下载」和「VrViewer 决定去读哪个文件」
+ * 看的确实是同一个地方——这两处各写一遍路径字符串，写错一个字符就表现为
+ * 「明明显示已下载，打开却说没有模型」。
+ */
+object VrStorage {
+    fun modelRoot(context: android.content.Context): File = File(context.filesDir, "vr-models")
+
+    /** 深度图缓存放在 cacheDir：它是可再生产物，系统存储紧张时有权自己清掉。 */
+    fun depthCacheRoot(context: android.content.Context): File = File(context.cacheDir, "vr-depth")
+}
+
 /** 位图 → 深度图上传用的 ALPHA_8。原生长度按 stride==width 读，所以直接 copyPixelsFromBuffer。 */
 fun VrDepthMap.toAlphaBitmap(): Bitmap {
     val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ALPHA_8)

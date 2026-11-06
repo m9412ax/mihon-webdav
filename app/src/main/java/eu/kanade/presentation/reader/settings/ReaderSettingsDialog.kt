@@ -29,6 +29,10 @@ fun ReaderSettingsDialog(
         stringResource(MR.strings.pref_category_reading_mode),
         stringResource(MR.strings.pref_category_general),
         stringResource(MR.strings.custom_filter),
+        // SY --> 头显。放在最后一个 tab：只有当前这本是用 VR 模式读的才有意义，
+        // 排前面会让只用 2D 的人每次开设置都看见一组看不懂的参数。
+        stringResource(MR.strings.vr_settings),
+        // SY <--
     )
     val pagerState = rememberPagerState { tabTitles.size }
 
@@ -63,6 +67,9 @@ fun ReaderSettingsDialog(
                     0 -> ReadingModePage(viewModel)
                     1 -> GeneralPage(viewModel)
                     2 -> ColorFilterPage(viewModel)
+                    // SY --> 头显
+                    else -> VrPage(viewModel)
+                    // SY <--
                 }
             }
         }

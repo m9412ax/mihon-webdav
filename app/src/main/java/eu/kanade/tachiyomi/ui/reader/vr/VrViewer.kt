@@ -23,6 +23,7 @@ import eu.kanade.tachiyomi.util.vr.VrDepthDiskCache
 import eu.kanade.tachiyomi.util.vr.VrDepthEstimator
 import eu.kanade.tachiyomi.util.vr.VrDepthModel
 import eu.kanade.tachiyomi.util.vr.VrDepthModelStore
+import eu.kanade.tachiyomi.util.vr.VrStorage
 import eu.kanade.tachiyomi.util.vr.toAlphaBitmap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -38,7 +39,6 @@ import kotlinx.coroutines.withTimeoutOrNull
 import logcat.LogPriority
 import mihon.app.di.appGraph
 import tachiyomi.core.common.util.system.logcat
-import java.io.File
 import java.io.InputStream
 import java.util.PriorityQueue
 
@@ -80,14 +80,20 @@ class VrViewer(private val activity: ReaderActivity) : Viewer {
     private var cachedBytes = 0L
 
     private val pending = PriorityQueue<DecodeJob>(compareBy { it.distance })
+
+    /**
+     * 深度任务队列。FIFO，但当前页会被 [showPage] 插到队首——用户正看着这一页，
+     * 不该排在几张预读图后面等好几秒。
+     */
+    private val pendingDepth = ArrayDeque<Pair<ReaderPage, VrPage>>()
     private var workerRunning = false
     private var serialCounter = 0L
 
     // 深度这条链路只在 vrDepthEnabled 时才真正干活，但对象本身一直存在：
     // 开关一打开就要能立刻用，不该在渲染线程上等一次磁盘扫描。
-    private val modelStore = VrDepthModelStore(File(activity.filesDir, "vr-models"))
+    private val modelStore = VrDepthModelStore(VrStorage.modelRoot(activity))
     private val depthCache = VrDepthDiskCache(
-        File(activity.cacheDir, "vr-depth"),
+        VrStorage.depthCacheRoot(activity),
         readerPreferences.vrDepthCacheMb.get() * 1024L * 1024L,
     )
     private var estimator: VrDepthEstimator? = null
@@ -220,6 +226,7 @@ class VrViewer(private val activity: ReaderActivity) : Viewer {
         workerScope.cancel()
         mainScope.cancel()
         synchronized(pending) { pending.clear() }
+        synchronized(pendingDepth) { pendingDepth.clear() }
         synchronized(cache) {
             cache.values.forEach { it.release() }
             cache.clear()
@@ -246,6 +253,7 @@ class VrViewer(private val activity: ReaderActivity) : Viewer {
         currentChapter = chapters.currChapter
         if (!sameChapter) {
             synchronized(pending) { pending.clear() }
+        synchronized(pendingDepth) { pendingDepth.clear() }
             synchronized(cache) {
                 cache.values.forEach { it.release() }
                 cache.clear()
@@ -358,6 +366,14 @@ class VrViewer(private val activity: ReaderActivity) : Viewer {
         val cached = synchronized(cache) { cache[page.index] }
         if (cached != null) {
             deliver(page, cached)
+            // 缓存命中时没有人会再启动 worker（没有解码任务），所以这里得自己把
+            // 缺失的深度插进队列并踢一脚，否则这一页会一直是平面的。
+            if (cached.depthBitmap == null && readerPreferences.vrDepthEnabled.get()) {
+                synchronized(pendingDepth) {
+                    if (pendingDepth.none { it.first === page }) pendingDepth.addFirst(page to cached)
+                }
+                drainQueues()
+            }
         } else {
             enqueue(page, distance = 0)
         }
@@ -447,28 +463,48 @@ class VrViewer(private val activity: ReaderActivity) : Viewer {
                 true
             }
         }
-        if (started) drainQueue()
+        if (started) drainQueues()
     }
 
-    private fun drainQueue() {
+    /**
+     * 一条线程、两个队列：**解码永远优先于深度**。
+     *
+     * 深度单帧要几百毫秒到几秒，如果和「解下一页的图」串在同一条队列里按页交替，
+     * 用户连翻几页时看到的会是一串平面 + 一张慢慢补上的深度，而不是提前备好的图。
+     * 所以深度任务只在解码队列空了之后才拿出来跑，且随时可以被更紧急的解码抢回去
+     * （每跑完一个深度任务就回到循环顶部重新比较）。
+     */
+    private fun drainQueues() {
         synchronized(this) {
             if (workerRunning) return
             workerRunning = true
         }
         workerScope.launch {
             while (isActive) {
-                val job = synchronized(pending) { pending.poll() } ?: break
-                // 排队期间用户可能已经翻走了，超出预读窗口的任务直接丢掉，
-                // 别让它去抢当前页的解码带宽。
-                val distance = currentPage?.let { absDistance(pages, it.index, job.page.index) }
-                    ?: job.distance
-                if (distance != 0 && distance > readerPreferences.vrPrefetchPages.get() + 1) continue
-                val result = decode(job.page) ?: continue
-                putCache(job.page.index, result)
-                deliver(job.page, result)
-                // 页面已经投出去了，这时候再补深度。只走 [deliverDepth]：
-                // 整页位图有十几 MB，为了一张几百 KB 的深度图重传一遍页面是纯粹的浪费。
-                if (attachDepth(job.page, result)) deliverDepth(result)
+                val job = synchronized(pending) { pending.poll() }
+                if (job != null) {
+                    // 排队期间用户可能已经翻走了，超出预读窗口的任务直接丢掉，
+                    // 别让它去抢当前页的解码带宽。
+                    val distance = currentPage?.let { absDistance(pages, it.index, job.page.index) }
+                        ?: job.distance
+                    if (distance == 0 || distance <= readerPreferences.vrPrefetchPages.get() + 1) {
+                        val result = decode(job.page)
+                        if (result != null) {
+                            putCache(job.page.index, result)
+                            deliver(job.page, result)
+                            if (readerPreferences.vrDepthEnabled.get()) {
+                                synchronized(pendingDepth) { pendingDepth.add(Pair(job.page, result)) }
+                            }
+                        }
+                    }
+                    continue
+                }
+
+                val depthJob = synchronized(pendingDepth) { pendingDepth.poll() } ?: break
+                val (page, vrPage) = depthJob
+                // 这页已经被淘汰、或用户早翻走了并且它也不在预读窗口里，就别再花几秒算它。
+                if (vrPage.released || vrPage.depthBitmap != null) continue
+                if (attachDepth(page, vrPage)) deliverDepth(vrPage)
             }
             synchronized(this@VrViewer) { workerRunning = false }
         }
