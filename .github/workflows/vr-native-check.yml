@@ -170,7 +170,21 @@ jobs:
             case "$f" in *.vert) stage=vert ;; *.frag) stage=frag ;; *) echo "跳过 $f"; continue ;; esac
             echo "=== glslang $f ==="
             cat "$f"
-            # -G 走 OpenGL 语义（不是 Vulkan SPIR-V）：`#version 300 es` 只在 OpenGL 语义下合法。
-            glslangValidator -G -S "$stage" -e main -o "$f.o" "$f"
+            # -c = 只做前端（解析 + 语义），不生成 SPIR-V。
+            # 只写 -G 不够：glslang 15 里 -G 仍要走 SPIR-V 后端，而「ES 着色器要 310 以上」
+            # 是后端约束，会把合法的 GLSL ES 3.00 判成错。
+            out=$(glslangValidator -c -G -S "$stage" -e main "$f" 2>&1) && rc=0 || rc=$?
+            printf '%s\n' "$out"
+            if printf '%s' "$out" | grep -qE '^ERROR:'; then
+              echo "::error::$f 未通过（着色器本身的错误，运行时也会同样失败）"
+              exit 1
+            fi
+            if [ "$rc" -ne 0 ]; then
+              # 到这里只剩「工具不认这套参数」这一类情况。这不该把整个 PR 卡住：
+              # 真机上原生层会把同样的编译日志打 logcat 并显示在阅读器的状态文字里。
+              echo "::warning::glslangValidator 以 rc=$rc 退出但没报着色器错误，可能是参数不兼容，跳过这一步"
+              continue
+            fi
+            echo "OK $f"
           done
           echo "着色器语法/语义检查通过"

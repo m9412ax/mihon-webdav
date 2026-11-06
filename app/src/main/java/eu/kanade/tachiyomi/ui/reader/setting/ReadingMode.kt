@@ -11,6 +11,9 @@ import eu.kanade.tachiyomi.ui.reader.viewer.pager.VerticalPagerViewer
 import eu.kanade.tachiyomi.ui.reader.viewer.webgpu.WebGpuViewer
 import eu.kanade.tachiyomi.ui.reader.viewer.webgpu.WebGpuViewerContinuous
 import eu.kanade.tachiyomi.ui.reader.viewer.webtoon.WebtoonViewer
+// SY --> 头显 viewer
+import eu.kanade.tachiyomi.ui.reader.vr.VrViewer
+// SY <--
 import mihon.app.di.appGraph
 import tachiyomi.i18n.MR
 
@@ -57,6 +60,16 @@ enum class ReadingMode(
         Direction.Vertical,
         ViewerType.Webtoon,
     ),
+    // SY --> 头显模式。flagValue 用 0x6：MASK 是 0x7，还能容一个模式，不用动掩码。
+    // 没有专门的图标就先借默认模式那个——缺图标不会报错，画错才难查。
+    VR(
+        MR.strings.vr_viewer,
+        R.drawable.ic_reader_default_24dp,
+        0x00000006,
+        null,
+        ViewerType.Vr,
+    ),
+    // SY <--
     ;
 
     companion object {
@@ -98,6 +111,9 @@ enum class ReadingMode(
                 VERTICAL -> VerticalPagerViewer(activity)
                 WEBTOON -> WebtoonViewer(activity)
                 CONTINUOUS_VERTICAL -> WebtoonViewer(activity, isContinuous = false)
+                // SY --> 头显：不走 highQualityRenderer，它换的是 2D 渲染内核，与 XR 无关。
+                VR -> VrViewer(activity)
+                // SY <--
                 DEFAULT -> throw IllegalStateException("Preference value must be resolved: $preference")
             }
         }
@@ -111,5 +127,9 @@ enum class ReadingMode(
     sealed interface ViewerType {
         data object Pager : ViewerType
         data object Webtoon : ViewerType
+
+        // SY --> 头显渲染，画面在 OpenXR 合成器那边，不在这个窗口里
+        data object Vr : ViewerType
+        // SY <--
     }
 }
