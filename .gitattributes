@@ -7,6 +7,13 @@
 # Gradle wrapper
 *.jar binary
 
+# 原生库：上面那条 `* text eol=lf` 是无条件强制转换（不是 text=auto，所以 git 不会
+# 自己识别二进制），漏了这条就会把 ELF 里的 0D 0A 字节对吃掉——实测 vendor 的
+# libopenxr_loader.so 里有近 3000 个 CR，转换后直接不是合法 ELF，而且只在运行时
+# 才炸（dlopen 失败），排查成本极高。
+*.so binary
+*.dll binary
+
 # Images
 *.webp binary
 *.png binary

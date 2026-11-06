@@ -1,0 +1,169 @@
+name: VR Native Check
+
+# 只为 app/src/main/cpp/vr 这一层服务。OpenXR + GLES 的代码在本机没法编译（NDK 下载不通），
+# 而完整的 assembleRelease 要十几分钟，用它收敛一个括号错误太慢了。
+# 这里只 configure CMake + 编 mihonvr-jni 一个 target，外加把着色器字符串抠出来做语法校验
+# ——GLSL 是运行时才编译的，写错了要戴上头显才发现，那个反馈环不能接受。
+on:
+  push:
+    branches:
+      - smb-support
+      - main
+    paths:
+      - 'app/src/main/cpp/**'
+      - 'third_party/openxr/**'
+      - '.github/workflows/vr-native-check.yml'
+  pull_request:
+    paths:
+      - 'app/src/main/cpp/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compile:
+    name: Compile mihonvr-jni (${{ matrix.abi }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install NDK and CMake
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKM=$(ls "$SDK"/cmdline-tools/latest/bin/sdkmanager \
+                    "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)
+          if [ -z "$SDKM" ]; then
+            echo "::error::找不到 sdkmanager（ANDROID_HOME=$SDK）"
+            exit 1
+          fi
+          yes | "$SDKM" --licenses >/dev/null 2>&1 || true
+          # 版本和 build.yml 保持一致，否则两边编译用的不是同一个编译器，检查结果没参考价值
+          "$SDKM" --install "ndk;28.2.13676358" "cmake;3.22.1"
+          echo "NDK_DIR=$SDK/ndk/28.2.13676358" >> "$GITHUB_ENV"
+          echo "NINJA_BIN=$(ls "$SDK"/cmake/*/bin/ninja | head -1)" >> "$GITHUB_ENV"
+          test -f "$SDK/ndk/28.2.13676358/build/cmake/android.toolchain.cmake"
+
+      # CMakeLists.txt 顶部就有 find_package(ncnn REQUIRED)，哪怕只编 VR target 也绕不过去。
+      - name: Fetch ncnn Android Vulkan SDK
+        run: |
+          set -euo pipefail
+          NCNN_VERSION='20260113'
+          NCNN_DIR="$PWD/third_party/ncnn-${NCNN_VERSION}-android-vulkan"
+          mkdir -p third_party/.tmp
+          curl -fsSL --retry 3 -o third_party/.tmp/ncnn.zip \
+            "https://github.com/Tencent/ncnn/releases/download/${NCNN_VERSION}/ncnn-${NCNN_VERSION}-android-vulkan.zip"
+          unzip -q third_party/.tmp/ncnn.zip -d third_party/.tmp/unpacked
+          # 官方 zip 可能带一层同名外壳目录，压平成 CMake 期望的 <SDK>/<ABI>/lib/cmake/ncnn
+          if [ -d "third_party/.tmp/unpacked/ncnn-${NCNN_VERSION}-android-vulkan" ]; then
+            mv "third_party/.tmp/unpacked/ncnn-${NCNN_VERSION}-android-vulkan" "$NCNN_DIR"
+          else
+            mv third_party/.tmp/unpacked "$NCNN_DIR"
+          fi
+          rm -rf third_party/.tmp
+          ls -d "$NCNN_DIR/${{ matrix.abi }}/lib/cmake/ncnn"
+          echo "NCNN_DIR=$NCNN_DIR" >> "$GITHUB_ENV"
+
+      - name: Check vendored OpenXR assets
+        run: |
+          set -euo pipefail
+          test -f third_party/openxr/include/openxr/openxr.h
+          LOADER="app/src/main/jniLibs/${{ matrix.abi }}/libopenxr_loader.so"
+          if [ ! -f "$LOADER" ]; then
+            echo "::error::$LOADER 不存在，CMake 会因此 FATAL_ERROR。新增 ABI 时必须从" \
+                 "openxr_loader_for_android AAR 的 prefab/modules/openxr_loader/libs/android.<ABI>/ 补一份。"
+            exit 1
+          fi
+          file "$LOADER"
+
+      - name: Configure CMake
+        run: |
+          set -euo pipefail
+          cmake -S app/src/main/cpp -B build/cmake \
+            -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK_DIR/build/cmake/android.toolchain.cmake" \
+            -DCMAKE_MAKE_PROGRAM="$NINJA_BIN" \
+            -DANDROID_ABI='${{ matrix.abi }}' \
+            -DANDROID_PLATFORM=android-26 \
+            -DANDROID_STL=c++_static \
+            -DANDROID_NDK="$NDK_DIR" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNCNN_SDK_DIR="$NCNN_DIR"
+
+      - name: Build mihonvr-jni
+        run: |
+          set -euo pipefail
+          set +e
+          cmake --build build/cmake --target mihonvr-jni -j "$(nproc)" 2>&1 | tee /tmp/build.log
+          status=${PIPESTATUS[0]}
+          set -e
+          echo "=== warnings ==="
+          grep -E 'warning:' /tmp/build.log | grep -v 'ncnn' | sort -u | head -40 || true
+          if [ "$status" -ne 0 ]; then
+            echo "=== errors ==="
+            grep -nE 'error:|FAILED' /tmp/build.log | head -60 || cat /tmp/build.log | tail -60
+            exit "$status"
+          fi
+          SO=$(find build/cmake -name 'libmihonvr-jni.so' | head -1)
+          test -n "$SO" || { echo "::error::构建成功但没找到 libmihonvr-jni.so"; exit 1; }
+          ls -la "$SO"
+          echo "=== 动态依赖：loader 必须出现在 NEEDED 里 ==="
+          READELF="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          "$READELF" --dynamic "$SO" | grep -E 'NEEDED|SONAME'
+
+  shaders:
+    name: Validate warp shaders
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # GLSL 只在运行时由驱动编译，CI 里这步是唯一能提前发现写错的地方。
+      # 用 Ubuntu 自带的 glslang（NDK 只有 glslc，而 glslc 走 Vulkan/SPIR-V 语义，
+      # 认不了 `#version 300 es`——ES 3.00 只在 OpenGL 语义下合法）。
+      - name: Install glslang
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq glslang-tools
+          glslangValidator --version || true
+
+      - name: Extract and check
+        run: |
+          set -euo pipefail
+          mkdir -p build/glsl
+          python3 - <<'PY'
+          import pathlib, re, sys
+          src = pathlib.Path('app/src/main/cpp/vr/shaders.h').read_text(encoding='utf-8')
+          blocks = re.findall(r'R"GLSL\((.*?)\)GLSL"', src, re.S)
+          if len(blocks) < 2:
+              print(f'::error::从 shaders.h 只抠出 {len(blocks)} 段 GLSL，raw string 标记可能被改坏了')
+              sys.exit(1)
+          out = pathlib.Path('build/glsl')
+          for body in blocks:
+              kind = 'vert' if 'in vec2 aPos' in body else 'frag'
+              path = out / f'warp.{kind}'
+              path.write_text(body, encoding='utf-8')
+              head = body.strip().splitlines()[0]
+              print(f'{path}: {kind} {len(body)} chars, first line = {head!r}')
+          PY
+          for stage in vert frag; do
+            f="build/glsl/warp.$stage"
+            [ -f "$f" ] || { echo "::error::缺少 $f"; exit 1; }
+            echo "=== glslang $f ==="
+            cat "$f"
+            # -G 走 OpenGL 语义；-O 关优化，报错行号才对得上源码
+            glslangValidator -G -O -S "$stage" -e main -o "build/glsl/warp.$stage.o" "$f"
+          done
+          echo "着色器语法/语义检查通过"

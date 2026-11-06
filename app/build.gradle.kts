@@ -72,6 +72,14 @@ android {
                 ncnnSdkDir?.let { arguments += "-DNCNN_SDK_DIR=$it" }
             }
         }
+
+        // SY --> splits.abi 只管最后出几个 APK，不管 CMake 给哪些 ABI 编。不限定的话
+        // NDK 会把 x86/x86_64 也各编一遍（VR 层 vendor 的 libopenxr_loader.so 没有这两个，
+        // 会在 CMake 配置期直接 FATAL_ERROR），而且白付一倍的 ncnn/Vulkan 编译时间。
+        ndk {
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a")
+        }
+        // SY <--
         // SY <--
     }
 
