@@ -603,7 +603,7 @@ class VrViewer(private val activity: ReaderActivity) : Viewer {
         val uri = page.uri ?: return null
         val cr = activity.contentResolver
         return if (uri.scheme == "file") {
-            { File(uri).inputStream() }
+            { File(uri.path ?: uri.toString()).inputStream() }
         } else {
             { cr.openInputStream(uri) ?: throw IllegalStateException("打开 $uri 失败（Pico 上 SAF 没授权？)") }
         }
