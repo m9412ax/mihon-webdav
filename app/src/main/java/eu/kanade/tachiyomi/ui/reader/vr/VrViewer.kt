@@ -39,6 +39,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import logcat.LogPriority
 import mihon.app.di.appGraph
 import tachiyomi.core.common.util.system.logcat
+import java.io.File
 import java.io.InputStream
 import java.util.PriorityQueue
 
@@ -579,8 +580,8 @@ class VrViewer(private val activity: ReaderActivity) : Viewer {
             }
             if (settled != Page.State.Ready) return null
         }
-        val streamFactory = page.stream ?: run {
-            lastDecodeError = "页就绪但没有数据流（本地散图源在 Pico 上多半没读到文件）"
+        val streamFactory = resolveStreamFactory(page) ?: run {
+            lastDecodeError = "没有可用数据源（stream / uri 都为空）"
             return null
         }
         val result = withContext(Dispatchers.Default) {
@@ -588,8 +589,24 @@ class VrViewer(private val activity: ReaderActivity) : Viewer {
                 ?: return@withContext null
             VrPage(serial = ++serialCounter, bitmap = bitmap)
         }
-        lastDecodeError = if (result == null) "位图解码失败（流可能是空图/不支持的格式）" else ""
+        lastDecodeError = if (result == null) "位图解码失败（流可能是空图/不支持的格式/SAF 没授权）" else ""
         return result
+    }
+
+    /**
+     * 有些源只给 [ReaderPage.uri]（SAF/文件）或 [ReaderPage.url]、不给 [ReaderPage.stream]。
+     * VR 这条腿要自己把字节流拿到手，不能假定上游一定填了 stream，否则这类源在 VR 里就
+     * "读不到"。stream 优先；uri 兜底（file:// 走 File，其余走 contentResolver）。
+     */
+    private fun resolveStreamFactory(page: ReaderPage): (() -> InputStream)? {
+        page.stream?.let { return it }
+        val uri = page.uri ?: return null
+        val cr = activity.contentResolver
+        return if (uri.scheme == "file") {
+            { File(uri).inputStream() }
+        } else {
+            { cr.openInputStream(uri) ?: throw IllegalStateException("打开 $uri 失败（Pico 上 SAF 没授权？)") }
+        }
     }
 
     /**
