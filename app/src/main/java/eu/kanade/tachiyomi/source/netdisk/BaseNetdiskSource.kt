@@ -11,6 +11,7 @@ import eu.kanade.tachiyomi.source.SourceFolder
 import eu.kanade.tachiyomi.source.UnmeteredSource
 import eu.kanade.tachiyomi.source.webdav.BaseWebDavSource
 import eu.kanade.tachiyomi.source.webdav.CoverQuality
+import eu.kanade.tachiyomi.source.webdav.MountedFolderBackend
 import eu.kanade.tachiyomi.source.webdav.WebDavCoverStore
 import eu.kanade.tachiyomi.source.webdav.WebDavRandomAccessSource
 import eu.kanade.tachiyomi.source.webdav.enforceLruCacheBudget
@@ -47,7 +48,8 @@ abstract class BaseNetdiskSource protected constructor(
     context: Context,
     /** 整本下载 / 散图下载用的客户端（与 API 取链同一个实现，保证头完全一致）。 */
     private val downloadClient: OkHttpClient,
-) : BaseWebDavSource(context), Source, UnmeteredSource, FolderSource, HeavyChapterLoadSource {
+) : BaseWebDavSource(context), Source, UnmeteredSource, FolderSource, HeavyChapterLoadSource,
+    MountedFolderBackend {
 
     /** 具体网盘的客户端接缝。 */
     protected abstract val netdiskClient: NetdiskClient
@@ -56,7 +58,7 @@ abstract class BaseNetdiskSource protected constructor(
      * SY 2026-10-06：路由键 —— 「云盘」源把挂载目录（`@<routeKey>:<id>` 前缀路径）委托回
      * 对应网盘后端时用。115 = "115"，夸克 = "quark"，阿里云盘 = "aliyun"。
      */
-    abstract val routeKey: String
+    abstract override val routeKey: String
 
     // ===================== id → 名字缓存 =====================
 
@@ -259,28 +261,28 @@ abstract class BaseNetdiskSource protected constructor(
     // tryHandlePdfCoverLocally 等在 BaseWebDavSource 里是 protected，兄弟类不能直接调，
     // 这里统一开 public 委托（2026-10-06：网盘挂载目录并入「云盘」文件夹视图，共用其规则）。
 
-    suspend fun delegateListDirectories(path: String): List<CloudSyncDirectory> = listDirectories(path)
+    override suspend fun delegateListDirectories(path: String): List<CloudSyncDirectory> = listDirectories(path)
 
-    suspend fun delegateListFiles(path: String): List<CloudSyncEntry> = listFiles(path)
+    override suspend fun delegateListFiles(path: String): List<CloudSyncEntry> = listFiles(path)
 
-    fun delegateOpenRangeSource(path: String): RandomAccessSource? = openRangeSource(path)
+    override fun delegateOpenRangeSource(path: String): RandomAccessSource? = openRangeSource(path)
 
-    suspend fun delegateDownloadChapterToCache(remotePath: String): File = downloadChapterToCache(remotePath)
+    override suspend fun delegateDownloadChapterToCache(remotePath: String): File = downloadChapterToCache(remotePath)
 
-    suspend fun delegateDownloadCoverEntry(
+    override suspend fun delegateDownloadCoverEntry(
         actual: CloudSyncEntry,
         mangaUrl: String,
         coverDir: File,
     ): File? = downloadCoverEntry(actual, mangaUrl, coverDir)
 
-    suspend fun delegateTryHandlePdfCoverLocally(
+    override suspend fun delegateTryHandlePdfCoverLocally(
         targetPath: String,
         baseName: String,
         title: String,
         coverFile: File,
     ): Boolean = tryHandlePdfCoverLocally(targetPath, baseName, title, coverFile)
 
-    suspend fun delegateIsDeepChainPdfOrPlaceholder(remotePath: String): Boolean =
+    override suspend fun delegateIsDeepChainPdfOrPlaceholder(remotePath: String): Boolean =
         isDeepChainPdfOrPlaceholder(remotePath)
 
     /**
@@ -294,14 +296,14 @@ abstract class BaseNetdiskSource protected constructor(
             .takeIf { it.exists() && it.length() > 0L }
 
     /** SY 2026-10-08：云盘门面复用同一实现（原为重复代码，现统一走覆写，行为一致）。 */
-    fun delegateCachedArchiveFile(remotePath: String): File? = cachedArchiveFile(remotePath)
+    override fun delegateCachedArchiveFile(remotePath: String): File? = cachedArchiveFile(remotePath)
 
     /**
      * SY 2026-10-05：「添加网盘文件夹」可视化浏览用 —— 列出 [path] 下的子目录。
      * [path] 传空串表示根目录（内部转 rootId），返回 (目录id, 目录名) 列表；
      * 失败返回空列表（由调用方提示）。
      */
-    suspend fun browseFolders(path: String): List<Pair<String, String>> = withIOContext {
+    override suspend fun browseFolders(path: String): List<Pair<String, String>> = withIOContext {
         if (!isConfigured()) return@withIOContext emptyList()
         runCatching { listDirectories(path.ifBlank { rootId() }) }
             .onFailure { e -> logcat(LogPriority.WARN, e) { "$name: 浏览目录失败 $path" } }

@@ -45,6 +45,8 @@ import eu.kanade.tachiyomi.source.netdisk.cloud115open.Cloud115OpenApi
 import eu.kanade.tachiyomi.source.netdisk.cloud115open.Cloud115OpenSource
 import eu.kanade.tachiyomi.source.netdisk.quark.QuarkApi
 import eu.kanade.tachiyomi.source.netdisk.quark.QuarkSource
+import eu.kanade.tachiyomi.source.smb.SmbClient
+import eu.kanade.tachiyomi.source.smb.SmbPreferences
 import eu.kanade.tachiyomi.ui.base.delegate.SecureActivityDelegateImpl
 import eu.kanade.tachiyomi.ui.main.MainActivity
 import eu.kanade.tachiyomi.ui.reader.ReaderActivity
@@ -131,6 +133,11 @@ interface AppGraph : ViewModelGraph {
     // SY --> 2026-10-08：115 开放平台（OAuth）——115 的唯一接入链路
     val cloud115OpenApi: Cloud115OpenApi
     val cloud115OpenSource: Cloud115OpenSource
+    // SY <--
+
+    // SY --> 2026-11-05：SMB/NAS 阅读源（设置页「网盘」里的连接配置 + 测试连接）
+    val smbPreferences: SmbPreferences
+    val smbClient: SmbClient
     // SY <--
 
     val updateChecker: AppUpdateChecker

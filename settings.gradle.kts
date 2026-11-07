@@ -52,14 +52,19 @@ dependencyResolutionManagement {
                 includeGroupByRegex("com\\.github(\\..*)*")
             }
         }
-        // 腾讯云为主。腾讯云缺 ca.mpreg:imagedecoder 的 AAR（有元数据无构件），
+        // SY --> 腾讯云为主。腾讯云缺 ca.mpreg:imagedecoder 的 AAR（有元数据无构件），
         // 用 content filter 把 ca.mpreg 组定向到阿里云。
         // 同理腾讯云/阿里云均缺 io.legere:pdfiumandroid-core 的 AAR（新发布构件未同步），
         // 把 io.legere 排除出镜像、直连 mavenCentral。
+        // io.coil-kt（coil3）与 com.mikepenz（aboutlibraries）同属「有元数据、冷缓存时
+        // 构件偶发 404」：Gradle 拿到元数据就锁在腾讯云、不再 fallback，于是 Unresolved
+        // reference 卡死整包。按同样手法把它们定向到阿里云/Maven Central。
         maven(url = "https://mirrors.cloud.tencent.com/nexus/repository/maven-public") {
             content {
                 excludeGroup("ca.mpreg")
                 excludeGroup("io.legere")
+                excludeGroup("io.coil-kt")
+                excludeGroup("com.mikepenz")
                 excludeGroupByRegex("com\\.github(\\..*)*")
             }
         }

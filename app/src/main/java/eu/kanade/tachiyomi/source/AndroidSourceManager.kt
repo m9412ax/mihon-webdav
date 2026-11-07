@@ -24,6 +24,7 @@ import tachiyomi.source.local.LocalSource
 import eu.kanade.tachiyomi.source.netdisk.aliyun.AliyunPanSource
 import eu.kanade.tachiyomi.source.netdisk.cloud115open.Cloud115OpenSource
 import eu.kanade.tachiyomi.source.netdisk.quark.QuarkSource
+import eu.kanade.tachiyomi.source.smb.SmbSource
 import eu.kanade.tachiyomi.source.webdav.LocalWebDavSource
 import eu.kanade.tachiyomi.source.webdav.WebDavSource
 import java.util.concurrent.ConcurrentHashMap
@@ -39,6 +40,7 @@ class AndroidSourceManager(
     private val quarkSource: QuarkSource,
     private val aliyunPanSource: AliyunPanSource,
     private val cloud115OpenSource: Cloud115OpenSource,
+    private val smbSource: SmbSource,
     private val downloadManager: Lazy<DownloadManager>,
 ) : SourceManager {
 
@@ -71,6 +73,9 @@ class AndroidSourceManager(
                             AliyunPanSource.ID to aliyunPanSource,
                             // SY --> 2026-10-08：115 开放平台（OAuth）源，与 Cookie 模式双轨并存。
                             Cloud115OpenSource.ID to cloud115OpenSource,
+                            // SY --> 2026-11-05：SMB/NAS 源。注册进来是为了让「云盘」的可视化目录
+                            // 选择器能按 id 取到它；它本身不进「浏览 → 图源」，而是挂载进云盘文件夹视图。
+                            SmbSource.ID to smbSource,
                             // SY <--
                         ),
                     )

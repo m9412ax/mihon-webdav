@@ -18,9 +18,14 @@ local.properties.bak
 *.bak
 
 # Local backup / scratch directories
-_backup_*/
-backup/
-tmp/
+# ⚠️ 必须带前导 / 锚定到仓库根：无锚定的 `backup/` 会匹配任意层级的同名目录，
+# 把源码目录 app/src/main/java/eu/kanade/tachiyomi/data/backup/ 一起吞掉。
+# 已跟踪的文件不受影响，但**在该目录下新建文件会被 git 静默忽略** ——
+# BackupCredentialGuard.kt 与 BackupSavedSearch.kt 就是这么丢的，
+# 于是干净检出编不过（:app 有 28 个级联的 Unresolved reference）。
+/_backup_*/
+/backup/
+/tmp/
 
 # Logs
 *.log

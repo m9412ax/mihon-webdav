@@ -393,6 +393,68 @@ class ReaderPreferences(
     fun upscaleYieldEnabled() = preferenceStore.getBoolean("pref_upscale_yield_enabled", true)
     // SY <--
 
+    // region VR（头显 / OpenXR）
+    //
+    // 距离/尺寸用「虚拟屏幕」的物理量表示：distanceMeters 是屏幕到头的距离，
+    // screenWidthDegrees 是它的水平张角之半。半高按页面宽高比推出来，所以换一张
+    // 竖/横不同的图不会让画面突然变大变小。
+
+    /** 虚拟屏幕距离，米。 */
+    val vrDistanceMeters: Preference<Float> = preferenceStore.getFloat("pref_vr_distance", 2f)
+
+    /** 虚拟屏幕水平张角的一半，度。 */
+    val vrScreenWidthDegrees: Preference<Float> = preferenceStore.getFloat("pref_vr_screen_half_angle", 26f)
+
+    /** 屏幕在头部锚点里的高低偏移，米。负值往下，读漫画时通常想让它落在视线略下方。 */
+    val vrVerticalOffsetMeters: Preference<Float> = preferenceStore.getFloat("pref_vr_vertical_offset", 0f)
+
+    /** 出屏/入屏总位移，米。深度图上的 0.5 对应屏幕平面，所以实际前后各一半。 */
+    val vrDepthStrengthMeters: Preference<Float> = preferenceStore.getFloat("pref_vr_depth_strength", 0.28f)
+
+    /** 关掉时完全不读深度，退化成普通双目投影。深度模型还没下载时就应该关着。 */
+    val vrDepthEnabled: Preference<Boolean> = preferenceStore.getBoolean("pref_vr_depth_enabled", false)
+
+    /**
+     * 用哪个单目深度模型。存 id 不存枚举：加一个模型不该让老存档里的值解析不出来，
+     * 取不到时 [eu.kanade.tachiyomi.util.vr.VrDepthModel.fromId] 会退回默认。
+     */
+    val vrDepthModel: Preference<String> = preferenceStore.getString(
+        "pref_vr_depth_model",
+        eu.kanade.tachiyomi.util.vr.VrDepthModel.SMALL_QUANTIZED.id,
+    )
+
+    /** 深度图磁盘缓存的上限。推理一次几百毫秒到几秒，来回翻页不该重算。 */
+    val vrDepthCacheMb: Preference<Int> = preferenceStore.getInt("pref_vr_depth_cache_mb", 256)
+
+    /** 屏幕锁在头上（转头画面跟着走）还是锁在空间里（转头能把屏幕甩出视野）。 */
+    val vrHeadLocked: Preference<Boolean> = preferenceStore.getBoolean("pref_vr_head_locked", true)
+
+    /** IPD 取反。真机上如果立体感是「反」的（近处往耳朵方向凸），就开这个。 */
+    val vrInvertParallax: Preference<Boolean> = preferenceStore.getBoolean("pref_vr_invert_parallax", false)
+
+    /** 前进/后退键互换。头显手柄的左右手习惯和手机音量键方向感不一样。 */
+    val vrInvertButtons: Preference<Boolean> = preferenceStore.getBoolean("pref_vr_invert_buttons", false)
+
+    /** 两次翻页之间的最小间隔，防止扳机按住不放一路翻过去。 */
+    val vrPageCooldownMillis: Preference<Int> = preferenceStore.getInt("pref_vr_page_cooldown", 350)
+
+    /**
+     * 往后预读几张。Thru3D 那类播放器的「预读」是发了请求但不确认落地，所以换页还是要
+     * 重新解码；这里的队列会真的把位图解好留在 [VrViewer] 的缓存里，翻到就直接上传。
+     */
+    val vrPrefetchPages: Preference<Int> = preferenceStore.getInt("pref_vr_prefetch_pages", 3)
+
+    /**
+     * 解码时限定的长边像素。源站一页可能 2500x3600，而这块虚拟屏幕在头显里实际只占
+     * 每眼一千多像素宽，不限尺寸就是每页 36MB 白付内存和上传时间。
+     */
+    val vrMaxEdgePixels: Preference<Int> = preferenceStore.getInt("pref_vr_max_edge", 1600)
+
+    /** 预读缓存的字节兜底上限。张数上限挡不住几页特别大的图。 */
+    val vrCacheMemoryLimitMb: Preference<Int> = preferenceStore.getInt("pref_vr_cache_mb", 96)
+
+    // endregion
+
     companion object {
         const val WEBTOON_PADDING_MIN = 0
         const val WEBTOON_PADDING_MAX = 25

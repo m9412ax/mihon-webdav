@@ -17,6 +17,7 @@ import eu.kanade.tachiyomi.ui.setting.track.QuarkQrLoginActivity
 import eu.kanade.tachiyomi.util.system.toast
 import kotlinx.coroutines.launch
 import mihon.app.di.appGraph
+import tachiyomi.core.common.preference.Preference as PreferenceData
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.i18n.stringResource
 
@@ -44,6 +45,7 @@ object SettingsNetdiskScreen : SearchableSettings {
 
         return listOf(
             getNetdiskSourceGroup(),
+            getSmbGroup(),
             Preference.PreferenceGroup(
                 title = "WebDAV（网盘同步）",
                 preferenceItems = listOf(
@@ -66,8 +68,9 @@ object SettingsNetdiskScreen : SearchableSettings {
                 ),
             ),
             Preference.PreferenceItem.InfoPreference(
-                "阅读图源（115 网盘 / 夸克网盘 / 阿里云盘）在「浏览 → 图源」里出现；" +
-                    "进图源后点「添加文件夹」可挂载更多目录（阿里云盘支持直接填目录名）。",
+                "网盘源（115 / 夸克 / 阿里云盘）与 SMB / NAS 都不在「浏览 → 图源」里单独出现，" +
+                    "统一从「书架 → 云盘 → 添加网盘 / SMB 文件夹」挂载目录后阅读，" +
+                    "封面 / 流式 / 章节识别与 WebDAV 云盘完全一致。",
             ),
         )
     }
@@ -216,4 +219,137 @@ object SettingsNetdiskScreen : SearchableSettings {
             ),
         )
     }
+
+    /**
+     * SY 2026-11-05：SMB / NAS 阅读源配置。与网盘源同级，但没有扫码登录那一套 ——
+     * 连接参数就是「主机 + 共享 + 账号」，填完用「测试连接」验证。
+     *
+     * 每改一项都要 [eu.kanade.tachiyomi.source.smb.SmbClient.reset]：否则客户端仍持有指向
+     * 旧服务器 / 旧账号的会话，界面看着改好了、读到的还是旧共享。
+     */
+    @Composable
+    private fun getSmbGroup(): Preference.PreferenceGroup {
+        val context = LocalContext.current
+        val scope = rememberCoroutineScope()
+        val smbPreferences = remember { context.appGraph.smbPreferences }
+        val smbClient = remember { context.appGraph.smbClient }
+
+        // subtitle 必须显式给：EditTextPreference 的默认值是 "%s"，会把当前值原样显示在列表里，
+        // 密码字段因此绝不能走默认值
+        fun smbField(title: String, subtitle: String, preference: PreferenceData<String>) =
+            Preference.PreferenceItem.EditTextPreference(
+                title = title,
+                subtitle = subtitle,
+                preference = preference,
+                onValueChanged = { newValue ->
+                    preference.set(newValue.trim())
+                    smbClient.reset()
+                    true
+                },
+            )
+
+        // ⚠️ 这里一律**不**显示「已填/未填」：subtitle 是组合期算出来的，填完保存后列表不会
+        // 重组，界面上会停留在旧状态（真机上就出现过「未填用户名」却已经拿用户名去连的假象）。
+        // 配置是否真的可用，一律以下面「上次测试结果」那行为准。
+        return Preference.PreferenceGroup(
+            title = "SMB / NAS（阅读）",
+            preferenceItems = listOf(
+                Preference.PreferenceItem.InfoPreference(
+                    "只读访问 SMB 共享（群晖 / 威联通 / Windows 共享 / Samba 等），把 NAS 上的漫画" +
+                    "当成一个图源读。仅支持 SMB2 / SMB3 —— 服务器若只开了 SMB1，需先在 NAS 侧启用 SMB2。\n\n" +
+                    "路径形如「/<共享名>/子路径」：云盘根层会直接列出这台服务器上的所有共享，" +
+                    "点进去就是该共享的内容，不用先决定连哪个共享。" +
+                    "配置好后到「书架 → 云盘 → 添加网盘 / SMB 文件夹」挂载要看的目录。",
+                ),
+                smbField("SMB：主机", "NAS 的 IP 或主机名，例如 192.168.1.10", smbPreferences.host),
+                smbField("SMB：端口", "默认 445；留空或填错都按 445 处理", smbPreferences.port),
+                smbField(
+                    "SMB：兜底共享名（可留空）",
+                    "留空即可。只有当服务器禁止枚举共享（禁用 IPC\$ 或账号无枚举权限）时，" +
+                        "才需要在这里填一个已知共享名，根层会退回只显示它。",
+                    smbPreferences.share,
+                ),
+                Preference.PreferenceItem.TextPreference(
+                    title = "SMB：测试共享枚举…",
+                    subtitle = "单独试一次「能不能列出共享」，据此判断要不要填上面那个兜底项",
+                    onClick = {
+                        scope.launch {
+                            smbClient.enumerateShares()
+                                .onSuccess { shares ->
+                                    val diskShares = shares.filter { it.isDiskTree && !it.isAdminShare }
+                                    showSmbMessage(
+                                        context,
+                                        "SMB 共享枚举",
+                                        if (diskShares.isEmpty()) {
+                                            "能连上，但没有任何可浏览的文件共享（共 ${shares.size} 项，" +
+                                                "都是 IPC\$ / 打印机 / 结尾带 \$ 的管理共享）。" +
+                                                "请在上面填一个已知共享名作为兜底。"
+                                        } else {
+                                            "可浏览共享 ${diskShares.size} 个：\n\n" +
+                                                diskShares.joinToString("\n") { share ->
+                                                    if (share.remark.isBlank()) share.name
+                                                    else "${share.name}　（${share.remark}）"
+                                                } +
+                                                "\n\n到「书架 → 云盘 → 添加网盘 / SMB 文件夹」就能直接进这些共享。"
+                                        },
+                                    )
+                                }
+                                .onFailure { e ->
+                                    showSmbMessage(
+                                        context,
+                                        "SMB 共享枚举失败",
+                                        (e.message ?: e.javaClass.simpleName) +
+                                            "\n\n如果连得上但枚举被拒，请在「兜底共享名」里填一个已知共享名。",
+                                    )
+                                }
+                        }
+                    },
+                ),
+                smbField("SMB：域 / 工作组", "家用 NAS 与 Windows 工作组留空即可，加域的机器才需要填", smbPreferences.domain),
+                smbField("SMB：用户名", "NAS 上用于访问该共享的账号", smbPreferences.username),
+                smbField("SMB：密码", "不会显示在列表里；也不会被写进备份或同步到云端", smbPreferences.password),
+                Preference.PreferenceItem.TextPreference(
+                    title = "SMB：测试连接",
+                    subtitle = "建连并列出共享根目录；失败会弹出完整原因",
+                    onClick = {
+                        scope.launch {
+                            if (!smbPreferences.isConfigured()) {
+                                val msg = "未配置：主机与用户名必填（共享名与密码都可留空）"
+                                smbPreferences.lastTestResult.set(msg)
+                                context.toast(msg)
+                                return@launch
+                            }
+                            smbClient.testConnection()
+                                .onSuccess {
+                                    smbPreferences.lastTestResult.set("连接成功：$it")
+                                    context.toast("SMB 连接成功")
+                                }
+                                .onFailure { e ->
+                                    val msg = e.message ?: e.javaClass.simpleName
+                                    smbPreferences.lastTestResult.set("连接失败：$msg")
+                                    showSmbMessage(context, "SMB 连接失败", msg)
+                                }
+                        }
+                    },
+                ),
+                Preference.PreferenceItem.InfoPreference(
+                    smbPreferences.lastTestResult.get().ifBlank {
+                        "上次测试结果：还没测过。填好上面几项后点「SMB：测试连接」。"
+                    },
+                ),
+            ),
+        )
+    }
+}
+
+/**
+ * SMB 相关的长文本提示统一走对话框：toast 在真机上被限制成两行，
+ * 恰好会把 smbj 的根因与 SRVSVC 的 NT 状态码截掉，而那正是排查所需。
+ */
+private fun showSmbMessage(context: android.content.Context, title: String, message: String) {
+    android.app.AlertDialog.Builder(context)
+        .setTitle(title)
+        .setMessage(message)
+        .setPositiveButton("好", null)
+        .show()
 }

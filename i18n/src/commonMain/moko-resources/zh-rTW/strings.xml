@@ -396,6 +396,7 @@
     <string name="tapping_inverted_horizontal">水平</string>
     <string name="pref_read_with_tapping_inverted">反轉輕觸區域</string>
     <string name="vertical_plus_viewer">捲動(留空)</string>
+    <string name="vr_viewer">頭戴裝置（VR）</string>
     <string name="tapping_inverted_none">無</string>
     <string name="restore_duration">%1$02d 分， %2$02d 秒</string>
     <string name="recent_manga_time">第 %1$s 章 - %2$s</string>

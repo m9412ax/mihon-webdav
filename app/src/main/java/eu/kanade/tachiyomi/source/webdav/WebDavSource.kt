@@ -12,11 +12,11 @@ import eu.kanade.tachiyomi.data.download.CloudSyncEntry
 import eu.kanade.tachiyomi.data.download.CloudSyncService
 import eu.kanade.tachiyomi.data.download.normalizePath
 import eu.kanade.tachiyomi.source.FolderSource
-import eu.kanade.tachiyomi.source.netdisk.BaseNetdiskSource
 import eu.kanade.tachiyomi.source.netdisk.NetdiskPreferences
 import eu.kanade.tachiyomi.source.netdisk.aliyun.AliyunPanSource
 import eu.kanade.tachiyomi.source.netdisk.cloud115open.Cloud115OpenSource
 import eu.kanade.tachiyomi.source.netdisk.quark.QuarkSource
+import eu.kanade.tachiyomi.source.smb.SmbSource
 import eu.kanade.tachiyomi.source.HeavyChapterLoadSource
 import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.SourceFolder
@@ -57,6 +57,8 @@ class WebDavSource(
     private val aliyunPanSource: AliyunPanSource,
     private val cloud115OpenSource: Cloud115OpenSource,
     private val netdiskPreferences: NetdiskPreferences,
+    // SY 2026-11-05：SMB/NAS 同样以前缀路由挂载进「云盘」
+    private val smbSource: SmbSource,
 ) : BaseWebDavSource(context) {
 
     init {
@@ -88,14 +90,17 @@ class WebDavSource(
         return config to downloadPreferences.cloudSyncDestination.get()
     }
 
-    // ===================== 网盘门面路由（SY 2026-10-06） =====================
+    // ===================== 挂载后端路由（SY 2026-10-06 / 2026-11-05） =====================
 
     /**
-     * 「添加网盘文件夹」挂载的目录以 `@<routeKey>:<id>` 前缀出现在文件夹视图里；
-     * 所有后端接缝（列目录/文件、Range 流式、下载缓存、封面）遇到该前缀一律委托给
-     * 对应网盘源 —— 于是网盘内容**完整共用云盘的封面规则 / 加载 / 流式读取**。
+     * 「添加网盘文件夹」挂载的目录以 `@<routeKey>:<目录标识>` 前缀出现在文件夹视图里；
+     * 所有后端接缝（列目录/文件、随机读、下载缓存、封面）遇到该前缀一律委托给对应后端 ——
+     * 于是挂载内容**完整共用云盘的封面规则 / 加载 / 流式读取**。
+     *
+     * 后端有两类（见 [MountedFolderBackend]）：网盘（夸克 / 阿里云盘 / 115，id 段路径 + HTTP 直链）
+     * 与 SMB/NAS（真实路径 + SMB2 原生随机读）。
      */
-    private fun netdiskFor(routePath: String): BaseNetdiskSource? {
+    private fun mountedBackendFor(routePath: String): MountedFolderBackend? {
         // ⚠️ 路径可能被 normalizePath 加了前导「/」（setActiveFolder / resolveFolderCover 等），
         // 必须先剥掉再匹配前缀，否则会掉进 WebDAV PROPFIND 分支（1.0.13 真机踩坑：HTTP 404）。
         val p = routePath.trimStart('/')
@@ -104,6 +109,7 @@ class WebDavSource(
             QuarkSource.ROUTE_KEY -> quarkSource
             AliyunPanSource.ROUTE_KEY -> aliyunPanSource
             Cloud115OpenSource.ROUTE_KEY -> cloud115OpenSource
+            SmbSource.ROUTE_KEY -> smbSource
             else -> null
         }
     }
@@ -168,14 +174,14 @@ class WebDavSource(
     override val folderCoverSegment = WebDavCoverBridge.FOLDER_SEGMENT
 
     override suspend fun listDirectories(path: String): List<CloudSyncDirectory> {
-        val nd = netdiskFor(path) ?: return configOrNull()?.let {
+        val nd = mountedBackendFor(path) ?: return configOrNull()?.let {
             cloudSyncService.listDirectories(it.first, path)
         } ?: emptyList()
         return rePrefixDirs(nd.routeKey, nd.delegateListDirectories(innerPath(path)))
     }
 
     override suspend fun listFiles(path: String): List<CloudSyncEntry> {
-        val nd = netdiskFor(path) ?: return configOrNull()?.let {
+        val nd = mountedBackendFor(path) ?: return configOrNull()?.let {
             cloudSyncService.listFiles(it.first, path)
         } ?: emptyList()
         return rePrefixEntries(nd.routeKey, nd.delegateListFiles(innerPath(path)))
@@ -207,14 +213,14 @@ class WebDavSource(
 
     override fun openRangeSource(remotePath: String): RandomAccessSource? {
         // SY 2026-10-06：网盘挂载目录 → 委托网盘后端（动态直链 + 网盘签名头）
-        netdiskFor(remotePath)?.let { return it.delegateOpenRangeSource(innerPath(remotePath)) }
+        mountedBackendFor(remotePath)?.let { return it.delegateOpenRangeSource(innerPath(remotePath)) }
         val (config, _) = configOrNull() ?: return null
         return newRangeSource(config, remotePath)
     }
 
     override suspend fun downloadImageToCache(folderPath: String, fileName: String): File {
         // SY 2026-10-06：网盘挂载目录 → 委托网盘后端（缓存目录同 cache/webdav-images，共用 256MB LRU）
-        netdiskFor(folderPath)?.let { return it.downloadImageToCache(innerPath(folderPath), fileName) }
+        mountedBackendFor(folderPath)?.let { return it.downloadImageToCache(innerPath(folderPath), fileName) }
         val (config, _) = configOrNull()
             ?: throw IllegalStateException("WebDAV 未配置，无法读取章节")
         val cacheDir = File(context.cacheDir, IMG_CACHE_SUBDIR).apply { mkdirs() }
@@ -245,7 +251,7 @@ class WebDavSource(
 
     override suspend fun downloadChapterToCache(remotePath: String): File {
         // SY 2026-10-06：网盘挂载目录 → 委托网盘后端（整本缓存落在网盘自己的归档目录，同样 1GB LRU）
-        netdiskFor(remotePath)?.let { return it.delegateDownloadChapterToCache(innerPath(remotePath)) }
+        mountedBackendFor(remotePath)?.let { return it.delegateDownloadChapterToCache(innerPath(remotePath)) }
         val (config, _) = configOrNull()
             ?: throw IllegalStateException("WebDAV 未配置，无法读取章节")
         val fullPath = remotePath.trimStart('/')
@@ -278,7 +284,7 @@ class WebDavSource(
 
     override suspend fun downloadCoverEntry(actual: CloudSyncEntry, mangaUrl: String, coverDir: File): File? {
         // SY 2026-10-06：网盘挂载目录 → 委托网盘后端下载 cover.*（封面落进云盘的 webdav-covers，共用规则）
-        netdiskFor(mangaUrl)?.let {
+        mountedBackendFor(mangaUrl)?.let {
             val innerActual = actual.copy(path = innerPath(actual.path))
             return it.delegateDownloadCoverEntry(innerActual, innerPath(mangaUrl), coverDir)
         }
@@ -308,7 +314,7 @@ class WebDavSource(
         coverFile: File,
     ): Boolean {
         // SY 2026-10-06：网盘挂载目录 → 委托网盘后端的深链策略（占位图写共享 fallback 目录，键含前缀，互不冲突）
-        netdiskFor(targetPath)?.let {
+        mountedBackendFor(targetPath)?.let {
             return it.delegateTryHandlePdfCoverLocally(innerPath(targetPath), baseName, title, coverFile)
         }
         return handlePdfDeepChainCover(targetPath, baseName, title, coverFile)
@@ -318,7 +324,7 @@ class WebDavSource(
         WebDavCoverStore.fallbackCoverFile(context, base).exists()
 
     override suspend fun isDeepChainPdfOrPlaceholder(remotePath: String): Boolean {
-        netdiskFor(remotePath)?.let {
+        mountedBackendFor(remotePath)?.let {
             return runCatching { it.delegateIsDeepChainPdfOrPlaceholder(innerPath(remotePath)) }.getOrDefault(false)
         }
         return runCatching { isRemotePdfDeepChain(remotePath) }.getOrDefault(false)
@@ -326,13 +332,13 @@ class WebDavSource(
 
     /** SY 2026-10-06：网盘挂载目录的章节 id 无扩展名，真实文件名委托网盘后端解析（ChapterLoader 分流用）。 */
     override suspend fun fileNameOf(url: String): String {
-        netdiskFor(url)?.let { return it.fileNameOf(innerPath(url)) }
+        mountedBackendFor(url)?.let { return it.fileNameOf(innerPath(url)) }
         return super.fileNameOf(url)
     }
 
     /** SY 2026-10-06：网盘挂载目录的整本缓存落在网盘自己的归档目录，查询重定向（修「读后补封面」兜底失效）。 */
     override fun cachedArchiveFile(remotePath: String): File? {
-        netdiskFor(remotePath)?.let { return it.delegateCachedArchiveFile(innerPath(remotePath)) }
+        mountedBackendFor(remotePath)?.let { return it.delegateCachedArchiveFile(innerPath(remotePath)) }
         return super.cachedArchiveFile(remotePath)
     }
 

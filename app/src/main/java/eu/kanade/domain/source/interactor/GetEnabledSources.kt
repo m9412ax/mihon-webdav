@@ -13,6 +13,7 @@ import tachiyomi.source.local.isLocal
 import eu.kanade.tachiyomi.source.netdisk.aliyun.AliyunPanSource
 import eu.kanade.tachiyomi.source.netdisk.cloud115open.Cloud115OpenSource
 import eu.kanade.tachiyomi.source.netdisk.quark.QuarkSource
+import eu.kanade.tachiyomi.source.smb.SmbSource
 import eu.kanade.tachiyomi.source.webdav.WebDavSource
 
 @Inject
@@ -32,12 +33,14 @@ class GetEnabledSources(
             sources
                 // SY --> WebDAV 云盘源始终启用（与 LocalSource 同待遇），不受语言开关影响。
                 // SY 2026-10-05：网盘源（115/夸克）与 WebDAV 云盘源同待遇，不受语言开关影响。
+                // SY 2026-11-05：SMB/NAS 源同待遇（lang 是 other，本来也不在任何语言开关里）。
                 .filter {
                     it.lang in enabledLanguages || it.isLocal() ||
                         it.id == WebDavSource.ID ||
                         it.id == QuarkSource.ID ||
                         it.id == AliyunPanSource.ID ||
-                        it.id == Cloud115OpenSource.ID
+                        it.id == Cloud115OpenSource.ID ||
+                        it.id == SmbSource.ID
                 }
                 // SY <--
                 .filterNot { it.id.toString() in disabledSources }

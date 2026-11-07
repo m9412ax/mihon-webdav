@@ -117,3 +117,74 @@ target_link_libraries(waifu2x-jni
     EGL
     dl
 )
+
+# SY --> VR：OpenXR 引擎（Pico Neo 3 等 OpenXR 头显）
+#
+# loader 与头文件随仓库 vendor，来源是 Khronos 官方发布的
+# openxr_loader_for_android-1.1.65.aar 里的 Prefab 包（Apache-2.0 OR MIT，可再分发）：
+#   - 头文件 → third_party/openxr/include/openxr/
+#   - 各 ABI 的 libopenxr_loader.so → app/src/main/jniLibs/<abi>/（AGP 自动打包进 APK）
+#
+# ⚠️ 刻意**不走 AGP 的 prefab**：prefab 靠隐式注入的 CMake 变量和 find_package 包装
+# 生效，猜错一处（包名大小写、变量名、生成的 config 路径）整层就白做，而且本地没有
+# NDK 无法预验证。这里所有路径都显式写出，能逐条核对。
+#
+# ⚠️ 为什么 loader 必须打进 APK 而不是用系统的：Android 7.0 起应用不能 dlopen
+# 非公开 SDK 的系统库。标准做法是自带 loader，由它通过
+# org.khronos.openxr.OpenXRRuntimeService 这个 Binder 服务找到设备上的 runtime
+# （Pico/Quest 都是这个机制，Thru3D 的包里同样有这个 .so 和这个服务声明）。
+set(OPENXR_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../third_party/openxr/include")
+set(OPENXR_LOADER_LIB "${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/${ANDROID_ABI}/libopenxr_loader.so")
+
+if(NOT EXISTS "${OPENXR_INCLUDE_DIR}/openxr/openxr.h")
+    message(FATAL_ERROR
+        "找不到 vendor 的 OpenXR 头文件：${OPENXR_INCLUDE_DIR}/openxr/openxr.h"
+    )
+endif()
+if(NOT EXISTS "${OPENXR_LOADER_LIB}")
+    message(FATAL_ERROR
+        "找不到 ${ANDROID_ABI} 的 libopenxr_loader.so（应在 ${OPENXR_LOADER_LIB}）。"
+        "若新增了 ABI，需从 openxr_loader_for_android AAR 的 "
+        "prefab/modules/openxr_loader/libs/android.${ANDROID_ABI}/ 下补进来。"
+    )
+endif()
+
+add_library(openxr_loader SHARED IMPORTED)
+set_target_properties(openxr_loader PROPERTIES IMPORTED_LOCATION "${OPENXR_LOADER_LIB}")
+
+add_library(mihonvr-jni SHARED
+    vr/xr_engine.cpp
+    vr/vr_jni.cpp
+)
+
+# GLES 3.2 而非 Vulkan：SD835 上 GLES swapchain 风险低得多，而深度 warp 本来就是
+# 片元着色器的活，不需要 compute。着色器源码在 vr/shaders.h 里（GLSL ES 无需预编译）。
+target_compile_options(mihonvr-jni PRIVATE
+    $<$<CONFIG:Debug>:-O2>
+    -Wall
+    -Wno-missing-field-initializers
+    -fno-exceptions
+)
+
+# xr_engine.h 里也定义了这两个宏，这里再显式给一遍：OpenXR 的头文件是按宏分块的，
+# 少一个就会得到「符号存在但类型没定义」这种很难读的报错。
+target_compile_definitions(mihonvr-jni PRIVATE
+    XR_USE_PLATFORM_ANDROID
+    XR_USE_GRAPHICS_API_OPENGL_ES
+)
+
+target_include_directories(mihonvr-jni PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/vr
+    ${OPENXR_INCLUDE_DIR}
+)
+
+target_link_libraries(mihonvr-jni
+    openxr_loader
+    android
+    log
+    jnigraphics
+    EGL
+    GLESv3
+    dl
+)
+# SY <--

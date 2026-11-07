@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - master
+      # 仓库默认分支是 main，原来的工作流只监听 master，push 到 main 根本不会触发
+      - main
   pull_request:
 
 concurrency:
@@ -27,8 +29,88 @@ jobs:
           java-version-file: .github/.java-version
           distribution: temurin
 
+      # 仓库不含 third_party/（见 README「构建超分需要 ncnn SDK」），干净检出直接构建会在
+      # CMake 配置阶段 FATAL_ERROR。这里按 app/src/main/cpp/CMakeLists.txt 期望的版本取官方
+      # 预编译包，放到它兜底查找的那个路径上，构建就不需要任何本地配置。
+      - name: Fetch ncnn Android Vulkan SDK
+        env:
+          NCNN_VERSION: '20260113'
+        run: |
+          set -euo pipefail
+          SDK="third_party/ncnn-${NCNN_VERSION}-android-vulkan"
+          if [ -d "$SDK" ]; then
+            echo "ncnn SDK already present, skipping download"
+            exit 0
+          fi
+          mkdir -p third_party/.tmp
+          curl -fsSL --retry 3 -o third_party/.tmp/ncnn.zip \
+            "https://github.com/Tencent/ncnn/releases/download/${NCNN_VERSION}/ncnn-${NCNN_VERSION}-android-vulkan.zip"
+          unzip -q third_party/.tmp/ncnn.zip -d third_party/.tmp/unpacked
+          # 官方 zip 可能带一层同名外壳目录，统一压平成 CMake 期望的 <SDK>/<ABI>/lib/cmake/ncnn 布局
+          if [ -d "third_party/.tmp/unpacked/ncnn-${NCNN_VERSION}-android-vulkan" ]; then
+            mv "third_party/.tmp/unpacked/ncnn-${NCNN_VERSION}-android-vulkan" "$SDK"
+          else
+            mv third_party/.tmp/unpacked "$SDK"
+          fi
+          rm -rf third_party/.tmp
+          # 布局不对就带着目录清单失败，别把问题拖到 CMake 里变成一句看不懂的报错
+          for ABI in arm64-v8a armeabi-v7a; do
+            if ! ls "$SDK/$ABI"/lib/cmake/ncnn/ncnn*C*nfig.cmake >/dev/null 2>&1; then
+              echo "::error::ncnn SDK 缺少 $ABI 的 CMake 包，实际布局如下"
+              find "$SDK" -maxdepth 4 | head -60
+              exit 1
+            fi
+          done
+          echo "ncnn SDK ready at $SDK"
+
+      # AGP 会自动下载缺失的 platform / build-tools，但**不会**下载 NDK，
+      # runner 镜像里也没有 28.2.13676358 这个版本，配置 :app 时直接
+      # "NDK not configured" 失败。超分的 libwaifu2x-jni.so 必须原生构建，NDK 省不掉。
+      - name: Install NDK and CMake
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKM=$(ls "$SDK"/cmdline-tools/latest/bin/sdkmanager \
+                    "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)
+          if [ -z "$SDKM" ]; then
+            echo "::error::找不到 sdkmanager（ANDROID_HOME=$SDK）"
+            ls -R "$SDK" 2>/dev/null | head -40
+            exit 1
+          fi
+          yes | "$SDKM" --licenses >/dev/null 2>&1 || true
+          # CMake 版本取自 app/build.gradle.kts 的 externalNativeBuild.cmake.version
+          "$SDKM" --install "ndk;28.2.13676358" "cmake;3.22.1"
+          test -d "$SDK/ndk/28.2.13676358" || { echo "::error::NDK 安装后目录不存在"; exit 1; }
+          echo "NDK + CMake ready under $SDK"
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      # 固定签名身份：否则每次 runner 都新生成一个 debug keystore，
+      # 相邻两次构建的 APK 签名不同，升级安装会报 INSTALL_FAILED_UPDATE_INCOMPATIBLE，
+      # 每轮迭代都得先卸载（书架/进度随之丢失）。
+      #
+      # app/build.gradle.kts 里已有上游的这条通道：MIHON_GITHUB_RELEASE 为真时读取
+      # storeFileBase64 / storePassword / keyAlias / keyPassword 覆盖 debug signingConfig，
+      # 而 release 的 signingConfig 就是 debug 的 —— 所以构建脚本一行都不用改。
+      #
+      # ⚠️ 来自 fork 的 pull_request 拿不到 secrets（GitHub 的限制）。这里用
+      # 「secret 非空才启用」而不是硬开：拿不到就退回 runner 的临时 keystore，
+      # 构建照样成功，只是那次产物无法覆盖安装。
       - name: Build release APK
-        run: ./gradlew assembleRelease
+        env:
+          MIHON_GITHUB_RELEASE: ${{ secrets.MIHONW_KEYSTORE_B64 != '' }}
+          storeFileBase64: ${{ secrets.MIHONW_KEYSTORE_B64 }}
+          storePassword: mihonw-fork-2026
+          keyAlias: MIHONW
+          keyPassword: mihonw-fork-2026
+        run: ./gradlew assembleRelease --stacktrace
+
+      # 产物不上传的话，CI 跑完了也拿不到 APK（原工作流只有 build、没有产出步骤）
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: mihonW-release-arm64v8a-armeabiv7a
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 14

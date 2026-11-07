@@ -72,6 +72,14 @@ android {
                 ncnnSdkDir?.let { arguments += "-DNCNN_SDK_DIR=$it" }
             }
         }
+
+        // SY --> splits.abi 只管最后出几个 APK，不管 CMake 给哪些 ABI 编。不限定的话
+        // NDK 会把 x86/x86_64 也各编一遍（VR 层 vendor 的 libopenxr_loader.so 没有这两个，
+        // 会在 CMake 配置期直接 FATAL_ERROR），而且白付一倍的 ncnn/Vulkan 编译时间。
+        ndk {
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a")
+        }
+        // SY <--
         // SY <--
     }
 
@@ -161,7 +169,10 @@ android {
             isEnable = true
             isUniversalApk = true
             reset()
-            include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+            // 只出 arm64-v8a 与 armeabi-v7a：真机全是这两个 ABI，x86/x86_64 只对模拟器有意义，
+            // 而每个 ABI 都要跑一遍 ncnn/Vulkan 的原生构建，砍掉一半能显著缩短构建时间。
+            // universal APK 仍保留（此时它只含这两个 ABI），单文件安装最省事。
+            include("armeabi-v7a", "arm64-v8a")
         }
     }
 
@@ -311,6 +322,18 @@ dependencies {
     implementation(libs.bundles.okhttp)
     implementation(libs.okio)
     implementation(libs.conscrypt) // TLS 1.3 support for Android < 10
+
+    // SY --> SMB/NAS 阅读源：smbj（SMB2/3，Apache-2.0）。
+    // NTLM 的 MD4 只能由 BouncyCastle 提供（Android JCE 没有），故随 smbj 引入 bcprov；
+    // libs.versions.toml 里的 bouncycastle 版本已对齐 smbj 的编译版本，避免两处解析出不同 BC。
+    implementation(libs.smbj)
+    // SY <--
+
+    // SY --> VR 2D→3D：单目深度推理。模型本体不打进 APK（运行时从 HF 镜像下载，
+    // 见 VrDepthModelStore），但 ORT 的运行时 .so 必须内置——它没有可下载的
+    // 按需安装通道。AAR 里四个 ABI 的 .so 由上面的 ndk.abiFilters 收敛到两个。
+    implementation(libs.onnxruntime)
+    // SY <--
 
     // Data serialization (JSON, protobuf, xml)
     implementation(libs.bundles.serialization)
