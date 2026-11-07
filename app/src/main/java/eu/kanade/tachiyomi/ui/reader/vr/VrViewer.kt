@@ -69,6 +69,9 @@ class VrViewer(private val activity: ReaderActivity) : Viewer {
     @Volatile private var pages: List<ReaderPage> = emptyList()
     @Volatile private var currentPage: ReaderPage? = null
     @Volatile private var deliveredSerial = 0L
+    @Volatile private var sessionState = "未启动"
+    @Volatile private var lastDecodeError = ""
+    @Volatile private var diagHidden = false
     private var currentChapter: ReaderChapter? = null
     private var nextChapter: ReaderChapter? = null
 
@@ -117,11 +120,16 @@ class VrViewer(private val activity: ReaderActivity) : Viewer {
             setBackgroundColor(Color.BLACK)
         }
         statusText = TextView(activity).apply {
-            setTextColor(Color.parseColor("#B8B8C0"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
             gravity = Gravity.CENTER
             setPadding(48, 48, 48, 48)
-            setOnClickListener { startSession() }
+            setOnClickListener {
+                if (sessionState != "会话就绪") startSession() else {
+                    diagHidden = !diagHidden
+                    renderStatus(if (diagHidden) "" else "诊断屏已重新显示")
+                }
+            }
         }
         rootView.addView(
             statusText,
@@ -140,15 +148,22 @@ class VrViewer(private val activity: ReaderActivity) : Viewer {
 
     private fun startSession() {
         if (!VrBridge.libraryAvailable) {
-            renderStatus("原生库不可用：${VrBridge.lastError()}")
+            sessionState = "原生库加载失败：${VrBridge.lastError()}"
+            logcat(LogPriority.ERROR) { "VrViewer: $sessionState" }
+            refreshDiag()
             return
         }
         if (!VrBridge.start(activity.assets)) {
-            renderStatus(VrBridge.lastError().ifBlank { "OpenXR 会话未能建立" })
+            sessionState = "OpenXR 会话失败：${VrBridge.lastError().ifBlank { "未知" }}"
+            logcat(LogPriority.ERROR) { "VrViewer: $sessionState" }
+            refreshDiag()
             return
         }
+        sessionState = "会话就绪"
+        logcat(LogPriority.INFO) { "VrViewer: OpenXR 会话已就绪，进入沉浸渲染" }
         applyParams()
-        currentPage?.let { showPage(it) } ?: renderStatus("VR 会话已就绪，等待页面…")
+        currentPage?.let { showPage(it) }
+
     }
 
     private fun applyParams() {
@@ -186,18 +201,7 @@ class VrViewer(private val activity: ReaderActivity) : Viewer {
             while (isActive) {
                 delay(1000)
                 if (activity.isFinishing || activity.isDestroyed) return@launch
-                val s = VrBridge.stats()
-                val state = when {
-                    !s.trackingValid -> "追踪丢失"
-                    s.activeSerial == deliveredSerial && deliveredSerial != 0L -> "已出图"
-                    else -> "等解码"
-                }
-                renderStatus(
-                    "VR %dx%d · %.0ffps · %s · 缓存 %d 页 · %s".format(
-                        s.width, s.height, s.fps, state, cache.size,
-                        currentPage?.let { "第 ${it.number} 页" } ?: "无页",
-                    ),
-                )
+                refreshDiag()
             }
         }
     }
@@ -209,13 +213,47 @@ class VrViewer(private val activity: ReaderActivity) : Viewer {
             return
         }
         statusText.text = text
-        // 会话正常时头显里看到的是合成器的投影层，这块文字只在 2D 镜像窗口里可见；
-        // 一旦真出错，它就是用户唯一能读到的诊断信息，所以不能提前藏掉。
-        statusText.visibility = if (VrBridge.isReady() && deliveredSerial != 0L) {
-            View.INVISIBLE
-        } else {
-            View.VISIBLE
+        // 手动隐藏优先；否则一切正常（会话就绪 + 有页 + 已上屏 + 无解码错误）就藏起来，
+        // 出任何问题立刻重新显示——诊断阶段宁可一直挂着，也不让用户以为"没反应"。
+        val healthy = VrBridge.isReady() && deliveredSerial != 0L && sessionState == "会话就绪" &&
+            lastDecodeError.isEmpty()
+        statusText.visibility = when {
+            diagHidden -> View.INVISIBLE
+            healthy -> View.INVISIBLE
+            else -> View.VISIBLE
         }
+    }
+
+    /**
+     * 组合出那块多行诊断屏。不靠 adb，戴着头显看一眼就能告诉我们卡在哪：
+     * 会话起没起、源列出几页、当前页解没解码、深度算没算。
+     */
+    private fun refreshDiag() {
+        val s = VrBridge.stats()
+        val cur = currentPage
+        val pageLine = when {
+            cur == null -> "无页（setChapters 还没送来页）"
+            s.activeSerial == deliveredSerial && deliveredSerial != 0L ->
+                "第 ${cur.number} 页 · 已上屏"
+            lastDecodeError.isEmpty() -> "第 ${cur.number} 页 · 解码中…"
+            else -> "第 ${cur.number} 页 · 失败：$lastDecodeError"
+        }
+        val depthLine = when {
+            !readerPreferences.vrDepthEnabled.get() -> "关"
+            s.haveDepth -> "有（缓存或已推理）"
+            else -> "无（模型没下载 / 未算）"
+        }
+        val tracking = if (s.trackingValid) "正常" else "丢失"
+        val block = buildString {
+            appendLine("VR 诊断")
+            appendLine("会话  $sessionState")
+            appendLine("源页  ${pages.size} 页（0 = 源没列出任何页）")
+            appendLine("当前  $pageLine")
+            appendLine("深度  $depthLine")
+            appendLine("追踪  $tracking")
+            append("(点击：会话未就绪=重试 / 已就绪=隐藏这块)")
+        }
+        renderStatus(block)
     }
 
     // endregion
@@ -395,7 +433,8 @@ class VrViewer(private val activity: ReaderActivity) : Viewer {
         // 所以这个顺序不会错帧，反过来则可能让新一帧配上旧深度。
         deliverDepth(vrPage)
         if (!VrBridge.setPage(vrPage.bitmap, vrPage.serial)) {
-            renderStatus("页面上传失败：${VrBridge.lastError()}")
+            lastDecodeError = "上屏失败：${VrBridge.lastError()}"
+            logcat(LogPriority.ERROR) { "VrViewer: $lastDecodeError" }
             return
         }
         deliveredSerial = vrPage.serial
@@ -524,19 +563,33 @@ class VrViewer(private val activity: ReaderActivity) : Viewer {
 
     private suspend fun decode(page: ReaderPage): VrPage? {
         if (page.status != Page.State.Ready) {
-            page.chapter.pageLoader?.loadPage(page)
+            page.chapter.pageLoader?.let { it.loadPage(page) }
+                ?: run {
+                    lastDecodeError = "该页没有加载器"
+                    return null
+                }
             // 没有超时的话，一个卡住的下载会把整条预读队列永久堵死。
             val settled = withTimeoutOrNull(PAGE_LOAD_TIMEOUT_MS) {
                 page.statusFlow.first { it == Page.State.Ready || it is Page.State.Error }
             }
+            lastDecodeError = when (settled) {
+                Page.State.Ready -> ""
+                is Page.State.Error -> "源报错：${settled.error.message ?: settled.error.javaClass.simpleName}"
+                else -> "等待加载超时/出错：$settled"
+            }
             if (settled != Page.State.Ready) return null
         }
-        val streamFactory = page.stream ?: return null
-        return withContext(Dispatchers.Default) {
+        val streamFactory = page.stream ?: run {
+            lastDecodeError = "页就绪但没有数据流（本地散图源在 Pico 上多半没读到文件）"
+            return null
+        }
+        val result = withContext(Dispatchers.Default) {
             val bitmap = decodeScaled(streamFactory, readerPreferences.vrMaxEdgePixels.get())
                 ?: return@withContext null
             VrPage(serial = ++serialCounter, bitmap = bitmap)
         }
+        lastDecodeError = if (result == null) "位图解码失败（流可能是空图/不支持的格式）" else ""
+        return result
     }
 
     /**
